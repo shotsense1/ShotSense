@@ -1,0 +1,6 @@
+uploaded_video.mp4
+shot_events.json
+__pycache__/
+*.mp4
+*.mov
+*.m4v

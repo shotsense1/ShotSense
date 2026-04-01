@@ -1,0 +1,6 @@
+streamlit
+pandas
+altair
+opencv-python-headless
+av
+streamlit-webrtc
