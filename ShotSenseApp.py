@@ -8,6 +8,7 @@ import av
 import tempfile
 import re
 import time
+import threading
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 from detector_cloud import process_video
@@ -211,6 +212,8 @@ class LiveVideoProcessor(VideoProcessorBase):
         self.last_result_color = (255, 255, 255)
         self.result_hold_until = 0
         self.session_start_time = time.time()
+        self.lock = threading.Lock()
+        self.new_events = []
 
     def get_motion(self, frame_a, frame_b, rect, thresh):
         x, y, w, h = rect
@@ -279,10 +282,8 @@ class LiveVideoProcessor(VideoProcessorBase):
                 "created_at": datetime.now().isoformat()
             }
 
-            if "cloud_events" not in st.session_state:
-                st.session_state.cloud_events = []
-
-            st.session_state.cloud_events.append(event)
+            with self.lock:
+                self.new_events.append(event)
 
         if current_time < self.result_hold_until:
             cv2.putText(
@@ -350,7 +351,7 @@ with st.sidebar:
                     st.warning("Video processed but no shots were detected.")
                 else:
                     save_data(player, shot_events)
-                    st.session_state.cloud_events = shot_events
+                    st.session_state.cloud_events.extend(shot_events)
                     st.success(f"Detected {len(shot_events)} shots for {player}!")
                     st.rerun()
 
@@ -367,7 +368,7 @@ with st.sidebar:
 # ---------------- LOAD DATA ----------------
 df = load_data(player)
 
-# also include current-session live events in dashboard view
+# also include current-session live/upload events in dashboard view
 if st.session_state.cloud_events:
     live_df = pd.DataFrame(st.session_state.cloud_events)
     if not live_df.empty:
@@ -591,7 +592,7 @@ elif page == "Live":
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Browser Live View")
-    st.write("Live preview can work in the deployed version, and live detections should now appear in the dashboard for the current session.")
+    st.write("Live detections will be synced into the dashboard while the camera is running.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -599,7 +600,7 @@ elif page == "Live":
     with c2:
         st.write(f"**Net ROI:** {NET_ROI}")
 
-    webrtc_streamer(
+    ctx = webrtc_streamer(
         key="shotsense-live-cloud",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIG,
@@ -607,5 +608,25 @@ elif page == "Live":
         media_stream_constraints={"video": True, "audio": False},
         async_processing=True,
     )
+
+    live_count = len(st.session_state.cloud_events)
+    st.write(f"Current session shots collected: **{live_count}**")
+
+    if ctx.state.playing and ctx.video_processor:
+        new_events = []
+        with ctx.video_processor.lock:
+            if ctx.video_processor.new_events:
+                new_events = ctx.video_processor.new_events.copy()
+                ctx.video_processor.new_events.clear()
+
+        if new_events:
+            st.session_state.cloud_events.extend(new_events)
+            save_data(player, new_events)
+            st.success(f"Synced {len(new_events)} live shot(s) to dashboard data.")
+            time.sleep(0.3)
+            st.rerun()
+
+        time.sleep(1)
+        st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
