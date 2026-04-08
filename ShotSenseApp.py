@@ -6,6 +6,7 @@ import altair as alt
 import cv2
 import av
 import tempfile
+import re
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 from detector_cloud import process_video
@@ -134,8 +135,41 @@ def clean_display_table(source_df):
     })
     return display_df
 
-def load_data():
-    data = st.session_state.cloud_events
+def safe_player_filename(player_name):
+    cleaned = re.sub(r'[^a-zA-Z0-9_-]+', '_', player_name.strip())
+    if not cleaned:
+        cleaned = "Player_1"
+    return f"data_{cleaned}.json"
+
+def save_data(player_name, new_events):
+    filename = safe_player_filename(player_name)
+
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                existing_data = json.load(f)
+        except Exception:
+            existing_data = []
+    else:
+        existing_data = []
+
+    existing_data.extend(new_events)
+
+    with open(filename, "w") as f:
+        json.dump(existing_data, f, indent=2)
+
+def load_data(player_name):
+    filename = safe_player_filename(player_name)
+
+    if not os.path.exists(filename):
+        return pd.DataFrame()
+
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return pd.DataFrame()
+
     if not data:
         return pd.DataFrame()
 
@@ -144,10 +178,19 @@ def load_data():
     if df.empty:
         return df
 
-    df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    if "created_at" in df.columns:
+        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
+    else:
+        df["created_at"] = pd.to_datetime(datetime.now())
+
     df["practice_day"] = df["created_at"].dt.date
     df["practice_month"] = df["created_at"].dt.to_period("M").astype(str)
-    df["shot_zone"] = "Field Goal"
+
+    if "shot_zone" not in df.columns:
+        df["shot_zone"] = "Field Goal"
+    else:
+        df["shot_zone"] = df["shot_zone"].fillna("Field Goal")
+
     return df
 
 # ---------------- LIVE SETTINGS ----------------
@@ -242,9 +285,6 @@ class LiveVideoProcessor(VideoProcessorBase):
         self.prev_frame = img.copy()
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# ---------------- LOAD DATA ----------------
-df = load_data()
-
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
     if os.path.exists("logo.png"):
@@ -296,8 +336,9 @@ with st.sidebar:
                 elif len(shot_events) == 0:
                     st.warning("Video processed but no shots were detected.")
                 else:
-                    st.session_state.cloud_events.extend(shot_events)
-                    st.success(f"Detected {len(shot_events)} shots!")
+                    save_data(player, shot_events)
+                    st.session_state.cloud_events = shot_events
+                    st.success(f"Detected {len(shot_events)} shots for {player}!")
                     st.rerun()
 
             except Exception as e:
@@ -310,10 +351,13 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio("Navigation", ["Profile", "Analytics", "Live"])
 
+# ---------------- LOAD DATA ----------------
+df = load_data(player)
+
 # ---------------- EMPTY STATE ----------------
 if df.empty and page != "Live":
     st.title("ShotSense Dashboard")
-    st.markdown("Upload a video, enter a session name, and click **Run Shot Detection** to generate shot data.")
+    st.markdown(f"No saved shot data yet for **{player}**. Upload a video, enter a session name, and click **Run Shot Detection**.")
     st.stop()
 
 # ---------------- OVERALL STATS ----------------
