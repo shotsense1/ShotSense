@@ -7,6 +7,7 @@ import cv2
 import av
 import tempfile
 import re
+import time
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 from detector_cloud import process_video
@@ -209,6 +210,7 @@ class LiveVideoProcessor(VideoProcessorBase):
         self.last_result = ""
         self.last_result_color = (255, 255, 255)
         self.result_hold_until = 0
+        self.session_start_time = time.time()
 
     def get_motion(self, frame_a, frame_b, rect, thresh):
         x, y, w, h = rect
@@ -227,8 +229,6 @@ class LiveVideoProcessor(VideoProcessorBase):
         return contours
 
     def recv(self, frame):
-        import time
-
         img = frame.to_ndarray(format="bgr24")
         img = cv2.resize(img, (960, 540))
 
@@ -270,6 +270,19 @@ class LiveVideoProcessor(VideoProcessorBase):
             self.result_hold_until = current_time + 1.2
             self.last_event_time = current_time
             self.motion_frames = 0
+
+            event = {
+                "time_sec": round(current_time - self.session_start_time, 2),
+                "result": result,
+                "shot_zone": "Field Goal",
+                "video_file": "Live Session",
+                "created_at": datetime.now().isoformat()
+            }
+
+            if "cloud_events" not in st.session_state:
+                st.session_state.cloud_events = []
+
+            st.session_state.cloud_events.append(event)
 
         if current_time < self.result_hold_until:
             cv2.putText(
@@ -353,6 +366,28 @@ with st.sidebar:
 
 # ---------------- LOAD DATA ----------------
 df = load_data(player)
+
+# also include current-session live events in dashboard view
+if st.session_state.cloud_events:
+    live_df = pd.DataFrame(st.session_state.cloud_events)
+    if not live_df.empty:
+        if "created_at" in live_df.columns:
+            live_df["created_at"] = pd.to_datetime(live_df["created_at"], errors="coerce")
+        else:
+            live_df["created_at"] = pd.to_datetime(datetime.now())
+
+        live_df["practice_day"] = live_df["created_at"].dt.date
+        live_df["practice_month"] = live_df["created_at"].dt.to_period("M").astype(str)
+
+        if "shot_zone" not in live_df.columns:
+            live_df["shot_zone"] = "Field Goal"
+        else:
+            live_df["shot_zone"] = live_df["shot_zone"].fillna("Field Goal")
+
+        if df.empty:
+            df = live_df
+        else:
+            df = pd.concat([df, live_df], ignore_index=True)
 
 # ---------------- EMPTY STATE ----------------
 if df.empty and page != "Live":
@@ -556,7 +591,7 @@ elif page == "Live":
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Browser Live View")
-    st.write("Live preview can work in the deployed version, but uploaded video processing is the reliable cloud-safe path.")
+    st.write("Live preview can work in the deployed version, and live detections should now appear in the dashboard for the current session.")
 
     c1, c2 = st.columns(2)
     with c1:
