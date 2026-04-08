@@ -12,8 +12,6 @@ from detector_cloud import process_video
 
 st.set_page_config(page_title="ShotSense Dashboard", layout="wide")
 
-# ✅ ADD THIS (fix upload size issues)
-st.set_option("server.maxUploadSize", 200)
 
 # ---------------- SESSION STATE ----------------
 if "cloud_events" not in st.session_state:
