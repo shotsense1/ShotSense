@@ -156,11 +156,24 @@ def metric(label, value):
         </div>
     """, unsafe_allow_html=True)
 
+def format_display_time(value):
+    try:
+        dt = pd.to_datetime(value, errors="coerce")
+        if pd.isna(dt):
+            return value
+        return dt.strftime("%Y-%m-%d %I:%M:%S %p")
+    except Exception:
+        return value
+
 def clean_display_table(source_df):
     display_df = source_df.copy()
-    for col in ["hoop_roi", "net_roi", "shot_location"]:
+
+    for col in ["hoop_roi", "net_roi", "shot_location", "player_name"]:
         if col in display_df.columns:
             display_df = display_df.drop(columns=[col])
+
+    if "created_at" in display_df.columns:
+        display_df["created_at"] = display_df["created_at"].apply(format_display_time)
 
     display_df = display_df.rename(columns={
         "time_sec": "Shot Time (s)",
@@ -179,8 +192,17 @@ def safe_player_filename(player_name):
         cleaned = "Player_1"
     return f"data_{cleaned}.json"
 
+def extract_player_name_from_filename(filename):
+    base = os.path.basename(filename)
+    if base.startswith("data_") and base.endswith(".json"):
+        return base[5:-5].replace("_", " ")
+    return base
+
 def save_data(player_name, new_events):
     filename = safe_player_filename(player_name)
+
+    for event in new_events:
+        event["player_name"] = player_name
 
     if os.path.exists(filename):
         try:
@@ -216,6 +238,9 @@ def load_data(player_name):
     if df.empty:
         return df
 
+    if "player_name" not in df.columns:
+        df["player_name"] = player_name
+
     if "created_at" in df.columns:
         df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
     else:
@@ -229,7 +254,66 @@ def load_data(player_name):
     else:
         df["shot_zone"] = df["shot_zone"].fillna("Field Goal")
 
+    if "video_file" not in df.columns:
+        df["video_file"] = "Unknown Session"
+
     return df
+
+def load_all_users_data():
+    files = [f for f in os.listdir(".") if f.startswith("data_") and f.endswith(".json")]
+    all_frames = []
+
+    for file in files:
+        player_name = extract_player_name_from_filename(file)
+        df = load_data(player_name)
+        if not df.empty:
+            all_frames.append(df)
+
+    if not all_frames:
+        return pd.DataFrame()
+
+    return pd.concat(all_frames, ignore_index=True)
+
+def build_user_daily_summary(df):
+    if df.empty:
+        return pd.DataFrame()
+
+    summary = df.groupby(["player_name", "practice_day"]).agg(
+        total_shots=("result", "count"),
+        makes=("result", lambda x: (x == "MAKE").sum()),
+        misses=("result", lambda x: (x == "MISS").sum())
+    ).reset_index()
+
+    summary["FG%"] = (summary["makes"] / summary["total_shots"] * 100).round(1)
+
+    return summary.rename(columns={
+        "player_name": "User",
+        "practice_day": "Practice Day",
+        "total_shots": "Total Shots",
+        "makes": "Makes",
+        "misses": "Misses"
+    })
+
+def build_user_session_summary(df):
+    if df.empty:
+        return pd.DataFrame()
+
+    summary = df.groupby(["player_name", "practice_day", "video_file"]).agg(
+        total_shots=("result", "count"),
+        makes=("result", lambda x: (x == "MAKE").sum()),
+        misses=("result", lambda x: (x == "MISS").sum())
+    ).reset_index()
+
+    summary["FG%"] = (summary["makes"] / summary["total_shots"] * 100).round(1)
+
+    return summary.rename(columns={
+        "player_name": "User",
+        "practice_day": "Practice Day",
+        "video_file": "Session Name",
+        "total_shots": "Total Shots",
+        "makes": "Makes",
+        "misses": "Misses"
+    })
 
 def get_hoop_roi():
     return tuple(int(v) for v in st.session_state.HOOP_ROI)
@@ -460,7 +544,8 @@ class LiveVideoProcessor(VideoProcessorBase):
                 "result": result,
                 "shot_zone": "Field Goal",
                 "video_file": "Live Session",
-                "created_at": datetime.now().isoformat()
+                "created_at": datetime.now().isoformat(),
+                "player_name": player
             }
 
             with self.lock:
@@ -553,7 +638,7 @@ with st.sidebar:
                     st.warning("Video processed but no shots were detected.")
                 else:
                     save_data(player, shot_events)
-                    st.session_state.cloud_events.extend(shot_events)
+                    st.session_state.cloud_events = []
                     st.success(f"Detected {len(shot_events)} shots for {player}!")
                     st.rerun()
 
@@ -568,36 +653,16 @@ with st.sidebar:
                     os.remove(optimized_path)
 
     st.markdown("---")
-    page = st.radio("Navigation", ["Profile", "Analytics", "Live"])
+    page = st.radio("Navigation", ["Profile", "Users", "Analytics", "Live"])
 
 # ---------------- LOAD DATA ----------------
 df = load_data(player)
-
-if st.session_state.cloud_events:
-    live_df = pd.DataFrame(st.session_state.cloud_events)
-    if not live_df.empty:
-        if "created_at" in live_df.columns:
-            live_df["created_at"] = pd.to_datetime(live_df["created_at"], errors="coerce")
-        else:
-            live_df["created_at"] = pd.to_datetime(datetime.now())
-
-        live_df["practice_day"] = live_df["created_at"].dt.date
-        live_df["practice_month"] = live_df["created_at"].dt.to_period("M").astype(str)
-
-        if "shot_zone" not in live_df.columns:
-            live_df["shot_zone"] = "Field Goal"
-        else:
-            live_df["shot_zone"] = live_df["shot_zone"].fillna("Field Goal")
-
-        if df.empty:
-            df = live_df
-        else:
-            df = pd.concat([df, live_df], ignore_index=True)
+all_users_df = load_all_users_data()
 
 # ---------------- EMPTY STATE ----------------
-if df.empty and page != "Live":
-    st.title("ShotSense Dashboard")
-    st.markdown(f"No saved shot data yet for **{player}**. Upload a video, enter a session name, and click **Run Shot Detection**.")
+if df.empty and page == "Profile":
+    st.title("Player Profile")
+    st.markdown(f"No saved data found yet for **{player}**. Run upload or live detection using this player name first.")
     st.stop()
 
 # ---------------- OVERALL STATS ----------------
@@ -727,7 +792,7 @@ if page == "Profile":
             misses=("result", lambda x: (x == "MISS").sum())
         ).reset_index()
 
-        daily_summary["shooting_percentage"] = (
+        daily_summary["Shooting %"] = (
             daily_summary["makes"] / daily_summary["total_shots"] * 100
         ).round(1)
 
@@ -735,8 +800,7 @@ if page == "Profile":
             "practice_day": "Practice Day",
             "total_shots": "Total Shots",
             "makes": "Makes",
-            "misses": "Misses",
-            "shooting_percentage": "Shooting %"
+            "misses": "Misses"
         })
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -752,7 +816,7 @@ if page == "Profile":
             session_count=("practice_day", "nunique")
         ).reset_index()
 
-        monthly_summary["shooting_percentage"] = (
+        monthly_summary["Shooting %"] = (
             monthly_summary["makes"] / monthly_summary["total_shots"] * 100
         ).round(1)
 
@@ -761,8 +825,7 @@ if page == "Profile":
             "total_shots": "Total Shots",
             "makes": "Makes",
             "misses": "Misses",
-            "session_count": "Session Count",
-            "shooting_percentage": "Shooting %"
+            "session_count": "Session Count"
         })
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -770,25 +833,53 @@ if page == "Profile":
         st.dataframe(monthly_summary, use_container_width=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
+# ================= USERS PAGE =================
+elif page == "Users":
+    st.title("All Users")
+
+    if all_users_df.empty:
+        st.info("No saved user data yet.")
+    else:
+        user_daily = build_user_daily_summary(all_users_df)
+        user_sessions = build_user_session_summary(all_users_df)
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("All Users Daily Stats")
+        st.dataframe(user_daily, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("All Users Session Stats")
+        st.dataframe(user_sessions, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("All Saved Shot Logs")
+        st.dataframe(clean_display_table(all_users_df), use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
 # ================= ANALYTICS PAGE =================
 elif page == "Analytics":
     st.title("Analytics")
 
-    zone_counts = df.groupby(["shot_zone", "result"]).size().reset_index(name="count")
+    if df.empty:
+        st.info("No saved data found for this player yet.")
+    else:
+        zone_counts = df.groupby(["shot_zone", "result"]).size().reset_index(name="count")
 
-    chart = alt.Chart(zone_counts).mark_bar().encode(
-        x=alt.X("shot_zone:N", title="Shot Zone"),
-        y=alt.Y("count:Q", title="Number of Shots"),
-        color=alt.Color(
-            "result:N",
-            scale=alt.Scale(domain=["MAKE", "MISS"], range=[GREEN, RED]),
-            title="Result"
-        ),
-        xOffset="result:N",
-        tooltip=["shot_zone", "result", "count"]
-    ).properties(height=360)
+        chart = alt.Chart(zone_counts).mark_bar().encode(
+            x=alt.X("shot_zone:N", title="Shot Zone"),
+            y=alt.Y("count:Q", title="Number of Shots"),
+            color=alt.Color(
+                "result:N",
+                scale=alt.Scale(domain=["MAKE", "MISS"], range=[GREEN, RED]),
+                title="Result"
+            ),
+            xOffset="result:N",
+            tooltip=["shot_zone", "result", "count"]
+        ).properties(height=360)
 
-    st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
 # ================= LIVE PAGE =================
 elif page == "Live":
@@ -901,9 +992,10 @@ elif page == "Live":
                         ctx.video_processor.new_events.clear()
 
                 if new_events:
-                    st.session_state.cloud_events.extend(new_events)
                     save_data(player, new_events)
+                    st.session_state.cloud_events = []
                     st.success(f"Synced {len(new_events)} live shot(s).")
+                    st.rerun()
                 else:
                     st.info("No new live shots to sync yet.")
             else:
