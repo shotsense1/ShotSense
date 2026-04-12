@@ -266,6 +266,39 @@ def draw_preview(frame, hoop_roi, net_roi):
 
     return preview
 
+def resize_video_to_1080p(input_path):
+    cap = cv2.VideoCapture(input_path)
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    if fps is None or fps <= 0:
+        fps = 30.0
+
+    # If already 1080p or lower, skip conversion
+    if width <= 1920 and height <= 1080:
+        cap.release()
+        return input_path
+
+    temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(temp_out, fourcc, fps, (1920, 1080))
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        resized = cv2.resize(frame, (1920, 1080))
+        out.write(resized)
+
+    cap.release()
+    out.release()
+
+    return temp_out
+
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
@@ -445,6 +478,7 @@ with st.sidebar:
             st.error("Please upload a video first.")
         else:
             temp_path = None
+            optimized_path = None
             try:
                 ext = os.path.splitext(uploaded_file.name)[1].lower() or ".mp4"
 
@@ -461,8 +495,11 @@ with st.sidebar:
                     st.error("Saved file is empty.")
                     st.stop()
 
+                with st.spinner("Optimizing video (1080p)..."):
+                    optimized_path = resize_video_to_1080p(temp_path)
+
                 with st.spinner("Processing video..."):
-                    shot_events = process_video(temp_path, session_name)
+                    shot_events = process_video(optimized_path, session_name)
 
                 if shot_events is None:
                     st.error("Detection returned no result.")
@@ -480,6 +517,9 @@ with st.sidebar:
             finally:
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
+
+                if optimized_path and optimized_path != temp_path and os.path.exists(optimized_path):
+                    os.remove(optimized_path)
 
     st.markdown("---")
     page = st.radio("Navigation", ["Profile", "Analytics", "Live"])
