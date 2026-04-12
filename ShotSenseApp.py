@@ -44,6 +44,24 @@ if "NET_ROI" not in st.session_state:
 if "detect_mode" not in st.session_state:
     st.session_state.detect_mode = False
 
+if "motion_thresh" not in st.session_state:
+    st.session_state.motion_thresh = 35
+
+if "net_thresh" not in st.session_state:
+    st.session_state.net_thresh = 28
+
+if "min_area" not in st.session_state:
+    st.session_state.min_area = 220
+
+if "motion_frames_needed" not in st.session_state:
+    st.session_state.motion_frames_needed = 3
+
+if "cooldown_seconds" not in st.session_state:
+    st.session_state.cooldown_seconds = 2.0
+
+if "result_hold_seconds" not in st.session_state:
+    st.session_state.result_hold_seconds = 1.2
+
 # ---------------- CSS ----------------
 st.markdown(f"""
 <style>
@@ -208,22 +226,27 @@ def load_data(player_name):
 
     return df
 
-def normalize_roi(value):
-    return tuple(int(v) for v in value)
-
 def get_hoop_roi():
-    return normalize_roi(st.session_state.get("HOOP_ROI", DEFAULT_HOOP_ROI))
+    return tuple(int(v) for v in st.session_state.HOOP_ROI)
 
 def get_net_roi():
-    return normalize_roi(st.session_state.get("NET_ROI", DEFAULT_NET_ROI))
+    return tuple(int(v) for v in st.session_state.NET_ROI)
 
-def nudge_roi(roi_key, dx=0, dy=0, dw=0, dh=0):
-    x, y, w, h = st.session_state[roi_key]
+def nudge_roi(roi_name, dx=0, dy=0, dw=0, dh=0):
+    if roi_name == "HOOP":
+        x, y, w, h = st.session_state.HOOP_ROI
+    else:
+        x, y, w, h = st.session_state.NET_ROI
+
     x = max(0, min(959, x + dx))
     y = max(0, min(539, y + dy))
     w = max(10, min(400, w + dw))
     h = max(10, min(300, h + dh))
-    st.session_state[roi_key] = (x, y, w, h)
+
+    if roi_name == "HOOP":
+        st.session_state.HOOP_ROI = (x, y, w, h)
+    else:
+        st.session_state.NET_ROI = (x, y, w, h)
 
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
@@ -276,6 +299,7 @@ class LiveVideoProcessor(VideoProcessorBase):
         cv2.rectangle(img, (x2, y2), (x2 + w2, y2 + h2), (0, 255, 0), 2)
         cv2.putText(img, "Net ROI", (x2, y2 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
+        # Preview / setup mode: show boxes only
         if not st.session_state.detect_mode:
             self.prev_frame = img.copy()
             return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -284,8 +308,15 @@ class LiveVideoProcessor(VideoProcessorBase):
             self.prev_frame = img.copy()
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        hoop_contours = self.get_motion(self.prev_frame, img, hoop_roi, 35)
-        large_hoop = [c for c in hoop_contours if cv2.contourArea(c) >= 220]
+        motion_thresh = st.session_state.motion_thresh
+        net_thresh = st.session_state.net_thresh
+        min_area = st.session_state.min_area
+        motion_frames_needed = st.session_state.motion_frames_needed
+        cooldown_seconds = st.session_state.cooldown_seconds
+        result_hold_seconds = st.session_state.result_hold_seconds
+
+        hoop_contours = self.get_motion(self.prev_frame, img, hoop_roi, motion_thresh)
+        large_hoop = [c for c in hoop_contours if cv2.contourArea(c) >= min_area]
 
         if len(large_hoop) > 0:
             self.motion_frames += 1
@@ -294,9 +325,9 @@ class LiveVideoProcessor(VideoProcessorBase):
 
         current_time = time.time()
 
-        if self.motion_frames >= 3 and (current_time - self.last_event_time) > 2.0:
-            net_contours = self.get_motion(self.prev_frame, img, net_roi, 28)
-            large_net = [c for c in net_contours if cv2.contourArea(c) >= 220]
+        if self.motion_frames >= motion_frames_needed and (current_time - self.last_event_time) > cooldown_seconds:
+            net_contours = self.get_motion(self.prev_frame, img, net_roi, net_thresh)
+            large_net = [c for c in net_contours if cv2.contourArea(c) >= min_area]
 
             if len(large_net) > 0:
                 result = "MAKE"
@@ -307,7 +338,7 @@ class LiveVideoProcessor(VideoProcessorBase):
 
             self.last_result = f"{result} - Field Goal"
             self.last_result_color = color
-            self.result_hold_until = current_time + 1.2
+            self.result_hold_until = current_time + result_hold_seconds
             self.last_event_time = current_time
             self.motion_frames = 0
 
@@ -405,6 +436,7 @@ with st.sidebar:
 # ---------------- LOAD DATA ----------------
 df = load_data(player)
 
+# also include current-session live/upload events in dashboard view
 if st.session_state.cloud_events:
     live_df = pd.DataFrame(st.session_state.cloud_events)
     if not live_df.empty:
@@ -627,30 +659,30 @@ elif page == "Live":
     st.title("Live Shot Detection")
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Browser Live View")
-    st.write("Use Setup Mode to move the existing boxes into place first, then start detection.")
+    st.subheader("Setup Instructions")
+    st.write("1. Place camera in a fixed position.")
+    st.write("2. Use Setup Mode to line up the existing hoop and net boxes.")
+    st.write("3. Adjust sensitivity settings if needed.")
+    st.write("4. Click Start Detection.")
 
-    hoop_roi = get_hoop_roi()
-    net_roi = get_net_roi()
+    st.warning("Keep the camera fixed after setup. If the camera moves, go back to Setup Mode and recalibrate.")
 
     c1, c2 = st.columns(2)
     with c1:
-        st.write(f"**Hoop ROI:** {hoop_roi}")
+        st.write(f"**Hoop ROI:** {get_hoop_roi()}")
     with c2:
-        st.write(f"**Net ROI:** {net_roi}")
+        st.write(f"**Net ROI:** {get_net_roi()}")
 
-    mode1, mode2 = st.columns(2)
-    with mode1:
+    m1, m2, m3 = st.columns(3)
+    with m1:
         if st.button("Setup Mode"):
             st.session_state.detect_mode = False
-            st.success("Setup mode enabled.")
-            st.rerun()
-
-    with mode2:
-        if st.button("Start Shot Detection"):
+    with m2:
+        if st.button("Start Detection"):
             st.session_state.detect_mode = True
-            st.success("Detection mode started.")
-            st.rerun()
+    with m3:
+        if st.button("Stop Detection"):
+            st.session_state.detect_mode = False
 
     if st.session_state.detect_mode:
         st.success("Detection Mode: ON")
@@ -662,118 +694,135 @@ elif page == "Live":
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIG,
         video_processor_factory=LiveVideoProcessor,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 1280},
+                "height": {"ideal": 720},
+                "frameRate": {"ideal": 30}
+            },
+            "audio": False
+        },
         async_processing=True,
     )
 
-    live_count = len(st.session_state.cloud_events)
-    st.write(f"Current session shots collected: **{live_count}**")
+    st.write(f"Current session shots collected: **{len(st.session_state.cloud_events)}**")
 
-    if st.session_state.detect_mode and ctx.state.playing and ctx.video_processor:
-        new_events = []
-        with ctx.video_processor.lock:
-            if ctx.video_processor.new_events:
-                new_events = ctx.video_processor.new_events.copy()
-                ctx.video_processor.new_events.clear()
+    sync1, sync2 = st.columns(2)
+    with sync1:
+        if st.button("Sync Live Results"):
+            if ctx.state.playing and ctx.video_processor:
+                new_events = []
+                with ctx.video_processor.lock:
+                    if ctx.video_processor.new_events:
+                        new_events = ctx.video_processor.new_events.copy()
+                        ctx.video_processor.new_events.clear()
 
-        if new_events:
-            st.session_state.cloud_events.extend(new_events)
-            save_data(player, new_events)
-            st.success(f"Synced {len(new_events)} live shot(s) to dashboard data.")
-            time.sleep(0.3)
-            st.rerun()
+                if new_events:
+                    st.session_state.cloud_events.extend(new_events)
+                    save_data(player, new_events)
+                    st.success(f"Synced {len(new_events)} live shot(s).")
+                else:
+                    st.info("No new live shots to sync yet.")
+            else:
+                st.warning("Start the live camera first.")
+
+    with sync2:
+        if st.button("Clear Current Session Shots"):
+            st.session_state.cloud_events = []
+            st.success("Current session shots cleared.")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- NUDGE CONTROLS ----------
+    # ---------- CALIBRATION TOOLS ----------
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Calibration Tools")
-    st.write("Move the existing hoop and net boxes until they line up correctly on the live screen.")
+    st.write("Move the existing boxes while watching the live preview. Your original ROI values are kept as the default.")
 
     st.markdown("### Hoop Box Controls")
     hc1, hc2, hc3, hc4 = st.columns(4)
 
     with hc1:
-        if st.button("Hoop Left"):
-            nudge_roi("HOOP_ROI", dx=-5)
-            st.rerun()
-        if st.button("Hoop Up"):
-            nudge_roi("HOOP_ROI", dy=-5)
-            st.rerun()
+        if st.button("Hoop ←"):
+            nudge_roi("HOOP", dx=-5)
+        if st.button("Hoop ↑"):
+            nudge_roi("HOOP", dy=-5)
 
     with hc2:
-        if st.button("Hoop Right"):
-            nudge_roi("HOOP_ROI", dx=5)
-            st.rerun()
-        if st.button("Hoop Down"):
-            nudge_roi("HOOP_ROI", dy=5)
-            st.rerun()
+        if st.button("Hoop →"):
+            nudge_roi("HOOP", dx=5)
+        if st.button("Hoop ↓"):
+            nudge_roi("HOOP", dy=5)
 
     with hc3:
         if st.button("Hoop Wider"):
-            nudge_roi("HOOP_ROI", dw=5)
-            st.rerun()
+            nudge_roi("HOOP", dw=5)
         if st.button("Hoop Taller"):
-            nudge_roi("HOOP_ROI", dh=5)
-            st.rerun()
+            nudge_roi("HOOP", dh=5)
 
     with hc4:
         if st.button("Hoop Narrower"):
-            nudge_roi("HOOP_ROI", dw=-5)
-            st.rerun()
+            nudge_roi("HOOP", dw=-5)
         if st.button("Hoop Shorter"):
-            nudge_roi("HOOP_ROI", dh=-5)
-            st.rerun()
+            nudge_roi("HOOP", dh=-5)
 
     st.markdown("### Net Box Controls")
     nc1, nc2, nc3, nc4 = st.columns(4)
 
     with nc1:
-        if st.button("Net Left"):
-            nudge_roi("NET_ROI", dx=-5)
-            st.rerun()
-        if st.button("Net Up"):
-            nudge_roi("NET_ROI", dy=-5)
-            st.rerun()
+        if st.button("Net ←"):
+            nudge_roi("NET", dx=-5)
+        if st.button("Net ↑"):
+            nudge_roi("NET", dy=-5)
 
     with nc2:
-        if st.button("Net Right"):
-            nudge_roi("NET_ROI", dx=5)
-            st.rerun()
-        if st.button("Net Down"):
-            nudge_roi("NET_ROI", dy=5)
-            st.rerun()
+        if st.button("Net →"):
+            nudge_roi("NET", dx=5)
+        if st.button("Net ↓"):
+            nudge_roi("NET", dy=5)
 
     with nc3:
         if st.button("Net Wider"):
-            nudge_roi("NET_ROI", dw=5)
-            st.rerun()
+            nudge_roi("NET", dw=5)
         if st.button("Net Taller"):
-            nudge_roi("NET_ROI", dh=5)
-            st.rerun()
+            nudge_roi("NET", dh=5)
 
     with nc4:
         if st.button("Net Narrower"):
-            nudge_roi("NET_ROI", dw=-5)
-            st.rerun()
+            nudge_roi("NET", dw=-5)
         if st.button("Net Shorter"):
-            nudge_roi("NET_ROI", dh=-5)
-            st.rerun()
+            nudge_roi("NET", dh=-5)
 
+    st.markdown("### Sensitivity Settings")
     s1, s2 = st.columns(2)
+
     with s1:
-        if st.button("Save Live Calibration"):
-            st.success("Calibration saved.")
+        st.session_state.motion_thresh = st.slider("Motion Threshold", 10, 80, st.session_state.motion_thresh)
+        st.session_state.net_thresh = st.slider("Net Threshold", 10, 80, st.session_state.net_thresh)
+        st.session_state.min_area = st.slider("Minimum Contour Area", 50, 2000, st.session_state.min_area)
 
     with s2:
+        st.session_state.motion_frames_needed = st.slider("Motion Frames Required", 1, 8, st.session_state.motion_frames_needed)
+        st.session_state.cooldown_seconds = st.slider("Cooldown Seconds", 1.0, 5.0, st.session_state.cooldown_seconds)
+        st.session_state.result_hold_seconds = st.slider("Result Display Time", 0.5, 3.0, st.session_state.result_hold_seconds)
+
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Save Live Calibration"):
+            st.success("Calibration saved.")
+    with b2:
         if st.button("Reset to Default ROI"):
             st.session_state.HOOP_ROI = DEFAULT_HOOP_ROI
             st.session_state.NET_ROI = DEFAULT_NET_ROI
+            st.session_state.motion_thresh = 35
+            st.session_state.net_thresh = 28
+            st.session_state.min_area = 220
+            st.session_state.motion_frames_needed = 3
+            st.session_state.cooldown_seconds = 2.0
+            st.session_state.result_hold_seconds = 1.2
             st.session_state.detect_mode = False
             st.success("ROIs reset to original defaults.")
-            st.rerun()
 
     st.write(f"**Current Hoop ROI:** {get_hoop_roi()}")
     st.write(f"**Current Net ROI:** {get_net_roi()}")
 
-    st.markdown("</div>")
+    st.markdown("</div>", unsafe_allow_html=True)
