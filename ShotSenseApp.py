@@ -27,15 +27,19 @@ WHITE = "#f8fafc"
 GREEN = "#22c55e"
 BORDER = "rgba(255,255,255,0.08)"
 
+# ---------------- DEFAULT ROI ----------------
+DEFAULT_HOOP_ROI = (540, 395, 103, 37)
+DEFAULT_NET_ROI = (563, 450, 48, 41)
+
 # ---------------- SESSION STATE ----------------
 if "cloud_events" not in st.session_state:
     st.session_state.cloud_events = []
 
 if "HOOP_ROI" not in st.session_state:
-    st.session_state.HOOP_ROI = (540, 395, 103, 37)
+    st.session_state.HOOP_ROI = DEFAULT_HOOP_ROI
 
 if "NET_ROI" not in st.session_state:
-    st.session_state.NET_ROI = (563, 450, 48, 41)
+    st.session_state.NET_ROI = DEFAULT_NET_ROI
 
 if "detect_mode" not in st.session_state:
     st.session_state.detect_mode = False
@@ -208,10 +212,18 @@ def normalize_roi(value):
     return tuple(int(v) for v in value)
 
 def get_hoop_roi():
-    return normalize_roi(st.session_state.get("HOOP_ROI", (540, 395, 103, 37)))
+    return normalize_roi(st.session_state.get("HOOP_ROI", DEFAULT_HOOP_ROI))
 
 def get_net_roi():
-    return normalize_roi(st.session_state.get("NET_ROI", (563, 450, 48, 41)))
+    return normalize_roi(st.session_state.get("NET_ROI", DEFAULT_NET_ROI))
+
+def nudge_roi(roi_key, dx=0, dy=0, dw=0, dh=0):
+    x, y, w, h = st.session_state[roi_key]
+    x = max(0, min(959, x + dx))
+    y = max(0, min(539, y + dy))
+    w = max(10, min(400, w + dw))
+    h = max(10, min(300, h + dh))
+    st.session_state[roi_key] = (x, y, w, h)
 
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
@@ -264,12 +276,10 @@ class LiveVideoProcessor(VideoProcessorBase):
         cv2.rectangle(img, (x2, y2), (x2 + w2, y2 + h2), (0, 255, 0), 2)
         cv2.putText(img, "Net ROI", (x2, y2 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # PREVIEW / SETUP MODE ONLY
         if not st.session_state.detect_mode:
             self.prev_frame = img.copy()
             return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-        # DETECTION MODE
         if self.prev_frame is None:
             self.prev_frame = img.copy()
             return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -618,7 +628,7 @@ elif page == "Live":
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Browser Live View")
-    st.write("Use Setup Mode to align the ROI boxes first. Then start detection.")
+    st.write("Use Setup Mode to move the existing boxes into place first, then start detection.")
 
     hoop_roi = get_hoop_roi()
     net_roi = get_net_roi()
@@ -633,7 +643,7 @@ elif page == "Live":
     with mode1:
         if st.button("Setup Mode"):
             st.session_state.detect_mode = False
-            st.success("Setup mode enabled. Adjust boxes before detection.")
+            st.success("Setup mode enabled.")
             st.rerun()
 
     with mode2:
@@ -675,59 +685,95 @@ elif page == "Live":
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ---------- LIVE CALIBRATION TOOLS ----------
+    # ---------- NUDGE CONTROLS ----------
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Calibration Tools")
-    st.write("Adjust the boxes below while watching the live preview. Save when they line up with the hoop and net.")
+    st.write("Move the existing hoop and net boxes until they line up correctly on the live screen.")
 
-    current_hoop = get_hoop_roi()
-    current_net = get_net_roi()
+    st.markdown("### Hoop Box Controls")
+    hc1, hc2, hc3, hc4 = st.columns(4)
 
-    st.markdown("### Hoop ROI")
-    h1, h2, h3, h4 = st.columns(4)
-    with h1:
-        hoop_x = st.number_input("Hoop X", min_value=0, max_value=959, value=current_hoop[0], step=1)
-    with h2:
-        hoop_y = st.number_input("Hoop Y", min_value=0, max_value=539, value=current_hoop[1], step=1)
-    with h3:
-        hoop_w = st.number_input("Hoop Width", min_value=10, max_value=400, value=current_hoop[2], step=1)
-    with h4:
-        hoop_h = st.number_input("Hoop Height", min_value=10, max_value=300, value=current_hoop[3], step=1)
-
-    st.markdown("### Net ROI")
-    n1, n2, n3, n4 = st.columns(4)
-    with n1:
-        net_x = st.number_input("Net X", min_value=0, max_value=959, value=current_net[0], step=1)
-    with n2:
-        net_y = st.number_input("Net Y", min_value=0, max_value=539, value=current_net[1], step=1)
-    with n3:
-        net_w = st.number_input("Net Width", min_value=10, max_value=300, value=current_net[2], step=1)
-    with n4:
-        net_h = st.number_input("Net Height", min_value=10, max_value=300, value=current_net[3], step=1)
-
-    preview_hoop = (int(hoop_x), int(hoop_y), int(hoop_w), int(hoop_h))
-    preview_net = (int(net_x), int(net_y), int(net_w), int(net_h))
-
-    st.write(f"**Preview Hoop ROI:** {preview_hoop}")
-    st.write(f"**Preview Net ROI:** {preview_net}")
-
-    # live-preview box movement before save
-    st.session_state.HOOP_ROI = preview_hoop
-    st.session_state.NET_ROI = preview_net
-
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("Save Live Calibration"):
-            st.session_state.HOOP_ROI = preview_hoop
-            st.session_state.NET_ROI = preview_net
-            st.success("Live calibration saved successfully.")
-
-    with b2:
-        if st.button("Reset to Default ROI"):
-            st.session_state.HOOP_ROI = (540, 395, 103, 37)
-            st.session_state.NET_ROI = (563, 450, 48, 41)
-            st.session_state.detect_mode = False
-            st.success("ROIs reset to default.")
+    with hc1:
+        if st.button("Hoop Left"):
+            nudge_roi("HOOP_ROI", dx=-5)
             st.rerun()
+        if st.button("Hoop Up"):
+            nudge_roi("HOOP_ROI", dy=-5)
+            st.rerun()
+
+    with hc2:
+        if st.button("Hoop Right"):
+            nudge_roi("HOOP_ROI", dx=5)
+            st.rerun()
+        if st.button("Hoop Down"):
+            nudge_roi("HOOP_ROI", dy=5)
+            st.rerun()
+
+    with hc3:
+        if st.button("Hoop Wider"):
+            nudge_roi("HOOP_ROI", dw=5)
+            st.rerun()
+        if st.button("Hoop Taller"):
+            nudge_roi("HOOP_ROI", dh=5)
+            st.rerun()
+
+    with hc4:
+        if st.button("Hoop Narrower"):
+            nudge_roi("HOOP_ROI", dw=-5)
+            st.rerun()
+        if st.button("Hoop Shorter"):
+            nudge_roi("HOOP_ROI", dh=-5)
+            st.rerun()
+
+    st.markdown("### Net Box Controls")
+    nc1, nc2, nc3, nc4 = st.columns(4)
+
+    with nc1:
+        if st.button("Net Left"):
+            nudge_roi("NET_ROI", dx=-5)
+            st.rerun()
+        if st.button("Net Up"):
+            nudge_roi("NET_ROI", dy=-5)
+            st.rerun()
+
+    with nc2:
+        if st.button("Net Right"):
+            nudge_roi("NET_ROI", dx=5)
+            st.rerun()
+        if st.button("Net Down"):
+            nudge_roi("NET_ROI", dy=5)
+            st.rerun()
+
+    with nc3:
+        if st.button("Net Wider"):
+            nudge_roi("NET_ROI", dw=5)
+            st.rerun()
+        if st.button("Net Taller"):
+            nudge_roi("NET_ROI", dh=5)
+            st.rerun()
+
+    with nc4:
+        if st.button("Net Narrower"):
+            nudge_roi("NET_ROI", dw=-5)
+            st.rerun()
+        if st.button("Net Shorter"):
+            nudge_roi("NET_ROI", dh=-5)
+            st.rerun()
+
+    s1, s2 = st.columns(2)
+    with s1:
+        if st.button("Save Live Calibration"):
+            st.success("Calibration saved.")
+
+    with s2:
+        if st.button("Reset to Default ROI"):
+            st.session_state.HOOP_ROI = DEFAULT_HOOP_ROI
+            st.session_state.NET_ROI = DEFAULT_NET_ROI
+            st.session_state.detect_mode = False
+            st.success("ROIs reset to original defaults.")
+            st.rerun()
+
+    st.write(f"**Current Hoop ROI:** {get_hoop_roi()}")
+    st.write(f"**Current Net ROI:** {get_net_roi()}")
 
     st.markdown("</div>")
