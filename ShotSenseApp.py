@@ -9,11 +9,8 @@ import tempfile
 import re
 import time
 import threading
-from io import BytesIO
-from PIL import Image
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
-from streamlit_drawable_canvas import st_canvas
 from detector_cloud import process_video
 
 st.set_page_config(page_title="ShotSense Dashboard", layout="wide")
@@ -40,8 +37,8 @@ if "HOOP_ROI" not in st.session_state:
 if "NET_ROI" not in st.session_state:
     st.session_state.NET_ROI = (563, 450, 48, 41)
 
-if "captured_live_frame" not in st.session_state:
-    st.session_state.captured_live_frame = None
+if "detect_mode" not in st.session_state:
+    st.session_state.detect_mode = False
 
 # ---------------- CSS ----------------
 st.markdown(f"""
@@ -216,33 +213,6 @@ def get_hoop_roi():
 def get_net_roi():
     return normalize_roi(st.session_state.get("NET_ROI", (563, 450, 48, 41)))
 
-def extract_last_rect(canvas_result):
-    if not canvas_result or not canvas_result.json_data:
-        return None
-
-    objects = canvas_result.json_data.get("objects", [])
-    rects = [obj for obj in objects if obj.get("type") == "rect"]
-
-    if not rects:
-        return None
-
-    rect = rects[-1]
-
-    left = int(rect.get("left", 0))
-    top = int(rect.get("top", 0))
-    width = int(rect.get("width", 0) * rect.get("scaleX", 1))
-    height = int(rect.get("height", 0) * rect.get("scaleY", 1))
-
-    return (left, top, width, height)
-
-def make_canvas_safe_image(pil_image):
-    buffer = BytesIO()
-    pil_image.save(buffer, format="PNG")
-    buffer.seek(0)
-    safe_image = Image.open(buffer).convert("RGB")
-    safe_image.load()
-    return safe_image
-
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
     {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
@@ -251,7 +221,6 @@ RTC_CONFIG = RTCConfiguration(
 class LiveVideoProcessor(VideoProcessorBase):
     def __init__(self):
         self.prev_frame = None
-        self.latest_frame = None
         self.motion_frames = 0
         self.last_event_time = 0
         self.last_result = ""
@@ -267,6 +236,9 @@ class LiveVideoProcessor(VideoProcessorBase):
         roi_a = frame_a[y:y+h, x:x+w]
         roi_b = frame_b[y:y+h, x:x+w]
 
+        if roi_a.size == 0 or roi_b.size == 0:
+            return []
+
         diff = cv2.absdiff(roi_a, roi_b)
         gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -281,9 +253,6 @@ class LiveVideoProcessor(VideoProcessorBase):
         img = frame.to_ndarray(format="bgr24")
         img = cv2.resize(img, (960, 540))
 
-        with self.lock:
-            self.latest_frame = img.copy()
-
         hoop_roi = get_hoop_roi()
         net_roi = get_net_roi()
 
@@ -295,6 +264,12 @@ class LiveVideoProcessor(VideoProcessorBase):
         cv2.rectangle(img, (x2, y2), (x2 + w2, y2 + h2), (0, 255, 0), 2)
         cv2.putText(img, "Net ROI", (x2, y2 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
+        # PREVIEW / SETUP MODE ONLY
+        if not st.session_state.detect_mode:
+            self.prev_frame = img.copy()
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        # DETECTION MODE
         if self.prev_frame is None:
             self.prev_frame = img.copy()
             return av.VideoFrame.from_ndarray(img, format="bgr24")
@@ -420,7 +395,6 @@ with st.sidebar:
 # ---------------- LOAD DATA ----------------
 df = load_data(player)
 
-# also include current-session live/upload events in dashboard view
 if st.session_state.cloud_events:
     live_df = pd.DataFrame(st.session_state.cloud_events)
     if not live_df.empty:
@@ -644,7 +618,7 @@ elif page == "Live":
 
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Browser Live View")
-    st.write("Live detections will be synced into the dashboard while the camera is running.")
+    st.write("Use Setup Mode to align the ROI boxes first. Then start detection.")
 
     hoop_roi = get_hoop_roi()
     net_roi = get_net_roi()
@@ -655,7 +629,23 @@ elif page == "Live":
     with c2:
         st.write(f"**Net ROI:** {net_roi}")
 
-    st.info("For best results, keep the camera fixed. If the setup changes, capture a new calibration frame below.")
+    mode1, mode2 = st.columns(2)
+    with mode1:
+        if st.button("Setup Mode"):
+            st.session_state.detect_mode = False
+            st.success("Setup mode enabled. Adjust boxes before detection.")
+            st.rerun()
+
+    with mode2:
+        if st.button("Start Shot Detection"):
+            st.session_state.detect_mode = True
+            st.success("Detection mode started.")
+            st.rerun()
+
+    if st.session_state.detect_mode:
+        st.success("Detection Mode: ON")
+    else:
+        st.info("Setup Mode: ON")
 
     ctx = webrtc_streamer(
         key="shotsense-live-cloud",
@@ -669,30 +659,7 @@ elif page == "Live":
     live_count = len(st.session_state.cloud_events)
     st.write(f"Current session shots collected: **{live_count}**")
 
-    cap1, cap2 = st.columns(2)
-
-    with cap1:
-        if st.button("Capture Current Frame"):
-            if ctx.state.playing and ctx.video_processor:
-                with ctx.video_processor.lock:
-                    if ctx.video_processor.latest_frame is not None:
-                        frame_bgr = ctx.video_processor.latest_frame.copy()
-                        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                        pil_img = Image.fromarray(frame_rgb).convert("RGB")
-                        safe_img = make_canvas_safe_image(pil_img)
-                        st.session_state.captured_live_frame = safe_img
-                        st.success("Calibration frame captured.")
-                    else:
-                        st.error("No frame available yet. Let the camera run for a second and try again.")
-            else:
-                st.error("Start the live camera first, then capture a frame.")
-
-    with cap2:
-        if st.button("Clear Captured Frame"):
-            st.session_state.captured_live_frame = None
-            st.rerun()
-
-    if ctx.state.playing and ctx.video_processor:
+    if st.session_state.detect_mode and ctx.state.playing and ctx.video_processor:
         new_events = []
         with ctx.video_processor.lock:
             if ctx.video_processor.new_events:
@@ -711,76 +678,56 @@ elif page == "Live":
     # ---------- LIVE CALIBRATION TOOLS ----------
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Calibration Tools")
-    st.write("Capture a frame from the live camera, then draw one box for the hoop and one for the net.")
+    st.write("Adjust the boxes below while watching the live preview. Save when they line up with the hoop and net.")
 
-    if st.session_state.captured_live_frame is not None:
-        image = make_canvas_safe_image(st.session_state.captured_live_frame.convert("RGB"))
-        img_w, img_h = image.size
+    current_hoop = get_hoop_roi()
+    current_net = get_net_roi()
 
-        st.image(image, caption="Captured Calibration Frame", use_container_width=True)
-        st.write(f"Calibration image size: {img_w} x {img_h}")
+    st.markdown("### Hoop ROI")
+    h1, h2, h3, h4 = st.columns(4)
+    with h1:
+        hoop_x = st.number_input("Hoop X", min_value=0, max_value=959, value=current_hoop[0], step=1)
+    with h2:
+        hoop_y = st.number_input("Hoop Y", min_value=0, max_value=539, value=current_hoop[1], step=1)
+    with h3:
+        hoop_w = st.number_input("Hoop Width", min_value=10, max_value=400, value=current_hoop[2], step=1)
+    with h4:
+        hoop_h = st.number_input("Hoop Height", min_value=10, max_value=300, value=current_hoop[3], step=1)
 
-        st.markdown("### Draw Hoop ROI")
-        hoop_canvas = st_canvas(
-            fill_color="rgba(0, 0, 255, 0.15)",
-            stroke_width=2,
-            stroke_color="#1d4ed8",
-            background_image=image,
-            update_streamlit=True,
-            height=img_h,
-            width=img_w,
-            drawing_mode="rect",
-            key="live_hoop_canvas",
-        )
+    st.markdown("### Net ROI")
+    n1, n2, n3, n4 = st.columns(4)
+    with n1:
+        net_x = st.number_input("Net X", min_value=0, max_value=959, value=current_net[0], step=1)
+    with n2:
+        net_y = st.number_input("Net Y", min_value=0, max_value=539, value=current_net[1], step=1)
+    with n3:
+        net_w = st.number_input("Net Width", min_value=10, max_value=300, value=current_net[2], step=1)
+    with n4:
+        net_h = st.number_input("Net Height", min_value=10, max_value=300, value=current_net[3], step=1)
 
-        hoop_rect = extract_last_rect(hoop_canvas)
-        if hoop_rect:
-            st.success(f"Hoop ROI selected: {hoop_rect}")
-        else:
-            st.caption("Draw one rectangle around the hoop.")
+    preview_hoop = (int(hoop_x), int(hoop_y), int(hoop_w), int(hoop_h))
+    preview_net = (int(net_x), int(net_y), int(net_w), int(net_h))
 
-        st.markdown("### Draw Net ROI")
-        net_canvas = st_canvas(
-            fill_color="rgba(0, 255, 0, 0.15)",
-            stroke_width=2,
-            stroke_color="#16a34a",
-            background_image=image,
-            update_streamlit=True,
-            height=img_h,
-            width=img_w,
-            drawing_mode="rect",
-            key="live_net_canvas",
-        )
+    st.write(f"**Preview Hoop ROI:** {preview_hoop}")
+    st.write(f"**Preview Net ROI:** {preview_net}")
 
-        net_rect = extract_last_rect(net_canvas)
-        if net_rect:
-            st.success(f"Net ROI selected: {net_rect}")
-        else:
-            st.caption("Draw one rectangle around the net.")
+    # live-preview box movement before save
+    st.session_state.HOOP_ROI = preview_hoop
+    st.session_state.NET_ROI = preview_net
 
-        s1, s2 = st.columns(2)
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button("Save Live Calibration"):
+            st.session_state.HOOP_ROI = preview_hoop
+            st.session_state.NET_ROI = preview_net
+            st.success("Live calibration saved successfully.")
 
-        with s1:
-            if st.button("Save Live Calibration"):
-                if hoop_rect and net_rect:
-                    st.session_state.HOOP_ROI = normalize_roi(hoop_rect)
-                    st.session_state.NET_ROI = normalize_roi(net_rect)
-                    st.success("Live calibration saved successfully.")
-                    st.rerun()
-                else:
-                    st.error("Please draw both the hoop ROI and net ROI before saving.")
+    with b2:
+        if st.button("Reset to Default ROI"):
+            st.session_state.HOOP_ROI = (540, 395, 103, 37)
+            st.session_state.NET_ROI = (563, 450, 48, 41)
+            st.session_state.detect_mode = False
+            st.success("ROIs reset to default.")
+            st.rerun()
 
-        with s2:
-            if st.button("Reset ROI Drawings"):
-                st.rerun()
-
-        p1, p2 = st.columns(2)
-        with p1:
-            st.write(f"**Saved Hoop ROI:** {get_hoop_roi()}")
-        with p2:
-            st.write(f"**Saved Net ROI:** {get_net_roi()}")
-
-    else:
-        st.caption("No captured frame yet. Start the live camera and click 'Capture Current Frame'.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>")
