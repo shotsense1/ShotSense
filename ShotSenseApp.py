@@ -4,11 +4,14 @@ import pandas as pd
 import os
 import altair as alt
 import cv2
+import av
 import tempfile
 import re
 import time
+import threading
 import numpy as np
 from datetime import datetime
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 from detector_cloud import process_video
 
 st.set_page_config(page_title="ShotSense Dashboard", layout="wide")
@@ -60,17 +63,8 @@ if "cooldown_seconds" not in st.session_state:
 if "result_hold_seconds" not in st.session_state:
     st.session_state.result_hold_seconds = 1.2
 
-if "last_live_frame" not in st.session_state:
-    st.session_state.last_live_frame = None
-
-if "live_motion_frames" not in st.session_state:
-    st.session_state.live_motion_frames = 0
-
-if "live_last_event_time" not in st.session_state:
-    st.session_state.live_last_event_time = 0.0
-
-if "live_last_result" not in st.session_state:
-    st.session_state.live_last_result = ""
+if "calib_frame_bytes" not in st.session_state:
+    st.session_state.calib_frame_bytes = None
 
 # ---------------- CSS ----------------
 st.markdown(f"""
@@ -258,26 +252,7 @@ def nudge_roi(roi_name, dx=0, dy=0, dw=0, dh=0):
     else:
         st.session_state.NET_ROI = (x, y, w, h)
 
-def get_motion(frame_a, frame_b, rect, thresh):
-    x, y, w, h = rect
-
-    roi_a = frame_a[y:y+h, x:x+w]
-    roi_b = frame_b[y:y+h, x:x+w]
-
-    if roi_a.size == 0 or roi_b.size == 0:
-        return []
-
-    diff = cv2.absdiff(roi_a, roi_b)
-    gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    _, thresh_img = cv2.threshold(blur, thresh, 255, cv2.THRESH_BINARY)
-    dilated = cv2.dilate(thresh_img, None, iterations=2)
-
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    return contours
-
-def draw_live_preview(frame, hoop_roi, net_roi):
+def draw_preview(frame, hoop_roi, net_roi):
     preview = frame.copy()
 
     hx, hy, hw, hh = hoop_roi
@@ -290,6 +265,158 @@ def draw_live_preview(frame, hoop_roi, net_roi):
     cv2.putText(preview, "Net ROI", (nx, max(20, ny - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
     return preview
+
+# ---------------- LIVE SETTINGS ----------------
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+class LiveVideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.prev_frame = None
+        self.motion_frames = 0
+        self.last_event_time = 0
+        self.last_result = ""
+        self.last_result_color = (255, 255, 255)
+        self.result_hold_until = 0
+        self.session_start_time = time.time()
+        self.lock = threading.Lock()
+        self.new_events = []
+
+        self.hoop_roi = DEFAULT_HOOP_ROI
+        self.net_roi = DEFAULT_NET_ROI
+        self.detect_mode = False
+        self.motion_thresh = 35
+        self.net_thresh = 28
+        self.min_area = 220
+        self.motion_frames_needed = 3
+        self.cooldown_seconds = 2.0
+        self.result_hold_seconds = 1.2
+
+    def update_settings(
+        self,
+        hoop_roi,
+        net_roi,
+        detect_mode,
+        motion_thresh,
+        net_thresh,
+        min_area,
+        motion_frames_needed,
+        cooldown_seconds,
+        result_hold_seconds,
+    ):
+        with self.lock:
+            self.hoop_roi = tuple(int(v) for v in hoop_roi)
+            self.net_roi = tuple(int(v) for v in net_roi)
+            self.detect_mode = bool(detect_mode)
+            self.motion_thresh = int(motion_thresh)
+            self.net_thresh = int(net_thresh)
+            self.min_area = int(min_area)
+            self.motion_frames_needed = int(motion_frames_needed)
+            self.cooldown_seconds = float(cooldown_seconds)
+            self.result_hold_seconds = float(result_hold_seconds)
+
+    def get_motion(self, frame_a, frame_b, rect, thresh):
+        x, y, w, h = rect
+
+        roi_a = frame_a[y:y+h, x:x+w]
+        roi_b = frame_b[y:y+h, x:x+w]
+
+        if roi_a.size == 0 or roi_b.size == 0:
+            return []
+
+        diff = cv2.absdiff(roi_a, roi_b)
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        _, thresh_img = cv2.threshold(blur, thresh, 255, cv2.THRESH_BINARY)
+        dilated = cv2.dilate(thresh_img, None, iterations=2)
+
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return contours
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.resize(img, (960, 540))
+
+        with self.lock:
+            hoop_roi = self.hoop_roi
+            net_roi = self.net_roi
+            detect_mode = self.detect_mode
+            motion_thresh = self.motion_thresh
+            net_thresh = self.net_thresh
+            min_area = self.min_area
+            motion_frames_needed = self.motion_frames_needed
+            cooldown_seconds = self.cooldown_seconds
+            result_hold_seconds = self.result_hold_seconds
+
+        x, y, w, h = hoop_roi
+        cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 2)
+        cv2.putText(img, "Hoop ROI", (x, max(20, y - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+        x2, y2, w2, h2 = net_roi
+        cv2.rectangle(img, (x2, y2), (x2 + w2, y2 + h2), (0, 255, 0), 2)
+        cv2.putText(img, "Net ROI", (x2, max(20, y2 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+        if not detect_mode:
+            self.prev_frame = img.copy()
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        if self.prev_frame is None:
+            self.prev_frame = img.copy()
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        hoop_contours = self.get_motion(self.prev_frame, img, hoop_roi, motion_thresh)
+        large_hoop = [c for c in hoop_contours if cv2.contourArea(c) >= min_area]
+
+        if len(large_hoop) > 0:
+            self.motion_frames += 1
+        else:
+            self.motion_frames = 0
+
+        current_time = time.time()
+
+        if self.motion_frames >= motion_frames_needed and (current_time - self.last_event_time) > cooldown_seconds:
+            net_contours = self.get_motion(self.prev_frame, img, net_roi, net_thresh)
+            large_net = [c for c in net_contours if cv2.contourArea(c) >= min_area]
+
+            if len(large_net) > 0:
+                result = "MAKE"
+                color = (0, 255, 0)
+            else:
+                result = "MISS"
+                color = (0, 0, 255)
+
+            self.last_result = f"{result} - Field Goal"
+            self.last_result_color = color
+            self.result_hold_until = current_time + result_hold_seconds
+            self.last_event_time = current_time
+            self.motion_frames = 0
+
+            event = {
+                "time_sec": round(current_time - self.session_start_time, 2),
+                "result": result,
+                "shot_zone": "Field Goal",
+                "video_file": "Live Session",
+                "created_at": datetime.now().isoformat()
+            }
+
+            with self.lock:
+                self.new_events.append(event)
+
+        if current_time < self.result_hold_until:
+            cv2.putText(
+                img,
+                self.last_result,
+                (30, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                self.last_result_color,
+                3
+            )
+
+        self.prev_frame = img.copy()
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
@@ -360,7 +487,6 @@ with st.sidebar:
 # ---------------- LOAD DATA ----------------
 df = load_data(player)
 
-# also include current-session live/upload events in dashboard view
 if st.session_state.cloud_events:
     live_df = pd.DataFrame(st.session_state.cloud_events)
     if not live_df.empty:
@@ -587,9 +713,10 @@ elif page == "Live":
     st.write("1. Place camera in a fixed position.")
     st.write("2. Use Setup Mode to line up the existing hoop and net boxes.")
     st.write("3. Adjust sensitivity settings if needed.")
-    st.write("4. Click Start Detection.")
+    st.write("4. Save calibration.")
+    st.write("5. Start live detection.")
 
-    st.warning("Keep the camera fixed after setup. If the camera moves, go back to Setup Mode and recalibrate.")
+    st.warning("Keep the camera fixed after setup. If the camera moves, recapture a calibration frame and adjust the ROI again.")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -613,96 +740,92 @@ elif page == "Live":
     else:
         st.info("Setup Mode: ON")
 
+    st.markdown("### Calibration Capture")
+    st.caption("Use this camera capture to line up and save the hoop and net ROI before starting continuous live detection.")
+
+    calibration_image = st.camera_input("Calibration Camera", key="calibration_camera_input")
+    if calibration_image is not None:
+        st.session_state.calib_frame_bytes = calibration_image.getvalue()
+
+    calib_frame = None
+    if st.session_state.calib_frame_bytes is not None:
+        file_bytes = np.asarray(bytearray(st.session_state.calib_frame_bytes), dtype=np.uint8)
+        calib_frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+
+    if calib_frame is not None:
+        calib_frame = cv2.resize(calib_frame, (960, 540))
+        calib_preview = draw_preview(calib_frame, get_hoop_roi(), get_net_roi())
+        st.image(
+            cv2.cvtColor(calib_preview, cv2.COLOR_BGR2RGB),
+            caption="Calibration Preview",
+            use_container_width=True,
+        )
+
+    save1, save2 = st.columns(2)
+    with save1:
+        if st.button("Save Live Calibration"):
+            st.success("Calibration saved.")
+    with save2:
+        if st.button("Clear Calibration Frame"):
+            st.session_state.calib_frame_bytes = None
+            st.success("Calibration frame cleared.")
+
+    st.markdown("### Continuous Live Detection")
+    st.caption("Start the live camera below after calibration is saved. This stream performs continuous MAKE/MISS detection using the saved ROI.")
+
+    ctx = webrtc_streamer(
+        key="shotsense-live-detect",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIG,
+        video_processor_factory=LiveVideoProcessor,
+        media_stream_constraints={
+            "video": {
+                "width": {"ideal": 1280},
+                "height": {"ideal": 720},
+                "frameRate": {"ideal": 30}
+            },
+            "audio": False
+        },
+        async_processing=True,
+    )
+
+    if ctx.video_processor:
+        ctx.video_processor.update_settings(
+            hoop_roi=get_hoop_roi(),
+            net_roi=get_net_roi(),
+            detect_mode=st.session_state.detect_mode,
+            motion_thresh=st.session_state.motion_thresh,
+            net_thresh=st.session_state.net_thresh,
+            min_area=st.session_state.min_area,
+            motion_frames_needed=st.session_state.motion_frames_needed,
+            cooldown_seconds=st.session_state.cooldown_seconds,
+            result_hold_seconds=st.session_state.result_hold_seconds,
+        )
+
     st.write(f"Current session shots collected: **{len(st.session_state.cloud_events)}**")
-
-    camera_image = st.camera_input("Live Camera")
-
-    if camera_image is not None:
-        file_bytes = np.asarray(bytearray(camera_image.read()), dtype=np.uint8)
-        frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-
-        if frame is not None:
-            frame = cv2.resize(frame, (960, 540))
-            hoop_roi = get_hoop_roi()
-            net_roi = get_net_roi()
-
-            preview = draw_live_preview(frame, hoop_roi, net_roi)
-
-            st.image(
-                cv2.cvtColor(preview, cv2.COLOR_BGR2RGB),
-                caption="Live Preview",
-                use_container_width=True,
-            )
-
-            if st.session_state.detect_mode:
-                prev_frame = st.session_state.last_live_frame
-                current_time = time.time()
-
-                if prev_frame is not None:
-                    hoop_contours = get_motion(
-                        prev_frame,
-                        frame,
-                        hoop_roi,
-                        st.session_state.motion_thresh
-                    )
-                    large_hoop = [c for c in hoop_contours if cv2.contourArea(c) >= st.session_state.min_area]
-
-                    if len(large_hoop) > 0:
-                        st.session_state.live_motion_frames += 1
-                    else:
-                        st.session_state.live_motion_frames = 0
-
-                    if (
-                        st.session_state.live_motion_frames >= st.session_state.motion_frames_needed
-                        and (current_time - st.session_state.live_last_event_time) > st.session_state.cooldown_seconds
-                    ):
-                        net_contours = get_motion(
-                            prev_frame,
-                            frame,
-                            net_roi,
-                            st.session_state.net_thresh
-                        )
-                        large_net = [c for c in net_contours if cv2.contourArea(c) >= st.session_state.min_area]
-
-                        if len(large_net) > 0:
-                            result = "MAKE"
-                        else:
-                            result = "MISS"
-
-                        event = {
-                            "time_sec": round(current_time, 2),
-                            "result": result,
-                            "shot_zone": "Field Goal",
-                            "video_file": "Live Session",
-                            "created_at": datetime.now().isoformat()
-                        }
-
-                        st.session_state.cloud_events.append(event)
-                        save_data(player, [event])
-
-                        st.session_state.live_last_event_time = current_time
-                        st.session_state.live_motion_frames = 0
-                        st.session_state.live_last_result = result
-
-                        if result == "MAKE":
-                            st.success("Last detected result: MAKE")
-                        else:
-                            st.warning("Last detected result: MISS")
-
-                st.session_state.last_live_frame = frame.copy()
 
     sync1, sync2 = st.columns(2)
     with sync1:
         if st.button("Sync Live Results"):
-            st.success("Live results are already being saved automatically.")
+            if ctx.state.playing and ctx.video_processor:
+                new_events = []
+                with ctx.video_processor.lock:
+                    if ctx.video_processor.new_events:
+                        new_events = ctx.video_processor.new_events.copy()
+                        ctx.video_processor.new_events.clear()
+
+                if new_events:
+                    st.session_state.cloud_events.extend(new_events)
+                    save_data(player, new_events)
+                    st.success(f"Synced {len(new_events)} live shot(s).")
+                else:
+                    st.info("No new live shots to sync yet.")
+            else:
+                st.warning("Start the live camera first.")
 
     with sync2:
         if st.button("Clear Current Session Shots"):
             st.session_state.cloud_events = []
-            st.session_state.last_live_frame = None
-            st.session_state.live_motion_frames = 0
-            st.session_state.live_last_event_time = 0.0
-            st.session_state.live_last_result = ""
             st.success("Current session shots cleared.")
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -710,7 +833,7 @@ elif page == "Live":
     # ---------- CALIBRATION TOOLS ----------
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Calibration Tools")
-    st.write("Move the existing boxes while watching the live preview. Your original ROI values are kept as the default.")
+    st.write("Move the existing boxes while watching the calibration preview. Your original ROI values are kept as the default.")
 
     st.markdown("### Hoop Box Controls")
     hc1, hc2, hc3, hc4 = st.columns(4)
@@ -781,7 +904,7 @@ elif page == "Live":
 
     b1, b2 = st.columns(2)
     with b1:
-        if st.button("Save Live Calibration"):
+        if st.button("Save Live Calibration 2"):
             st.success("Calibration saved.")
     with b2:
         if st.button("Reset to Default ROI"):
@@ -794,10 +917,7 @@ elif page == "Live":
             st.session_state.cooldown_seconds = 2.0
             st.session_state.result_hold_seconds = 1.2
             st.session_state.detect_mode = False
-            st.session_state.last_live_frame = None
-            st.session_state.live_motion_frames = 0
-            st.session_state.live_last_event_time = 0.0
-            st.session_state.live_last_result = ""
+            st.session_state.calib_frame_bytes = None
             st.success("ROIs reset to original defaults.")
 
     st.write(f"**Current Hoop ROI:** {get_hoop_roi()}")
