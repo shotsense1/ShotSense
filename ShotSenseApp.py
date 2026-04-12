@@ -890,6 +890,13 @@ elif page == "Live":
             nudge_roi("NET", dh=-5)
 
     st.markdown("### Sensitivity Settings")
+    st.caption("Motion Threshold: how much movement near the rim counts as a shot.")
+    st.caption("Net Threshold: how much the net has to move for it to count as a make.")
+    st.caption("Minimum Contour Area: ignores small movements that aren’t real shots.")
+    st.caption("Motion Frames Required: makes sure the ball is seen long enough before counting it.")
+    st.caption("Cooldown Seconds: stops one shot from being counted multiple times.")
+    st.caption("Result Display Time: how long MAKE or MISS stays on screen.")
+
     s1, s2 = st.columns(2)
 
     with s1:
