@@ -10,6 +10,7 @@ import re
 import time
 import threading
 import numpy as np
+import inspect
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
 from detector_cloud import process_video
@@ -276,7 +277,6 @@ def resize_video_to_1080p(input_path):
     if fps is None or fps <= 0:
         fps = 30.0
 
-    # If already 1080p or lower, skip conversion
     if width <= 1920 and height <= 1080:
         cap.release()
         return input_path
@@ -298,6 +298,35 @@ def resize_video_to_1080p(input_path):
     out.release()
 
     return temp_out
+
+def get_video_first_frame(video_path):
+    cap = cv2.VideoCapture(video_path)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
+        return None
+
+    return cv2.resize(frame, (960, 540))
+
+def process_video_with_optional_roi(video_path, session_name, use_calibrated_roi):
+    if not use_calibrated_roi:
+        return process_video(video_path, session_name)
+
+    try:
+        sig = inspect.signature(process_video)
+        kwargs = {}
+        if "hoop_roi" in sig.parameters:
+            kwargs["hoop_roi"] = get_hoop_roi()
+        if "net_roi" in sig.parameters:
+            kwargs["net_roi"] = get_net_roi()
+
+        if kwargs:
+            return process_video(video_path, session_name, **kwargs)
+
+        return process_video(video_path, session_name)
+    except TypeError:
+        return process_video(video_path, session_name)
 
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
@@ -468,10 +497,15 @@ with st.sidebar:
 
     session_name = st.text_input("Session Name", "Practice Day 1")
     uploaded_file = st.file_uploader("Upload Basketball Video", type=["mp4", "mov", "m4v", "avi"])
+    use_upload_calibration = st.checkbox("Use current calibrated ROI for uploaded video", value=True)
 
     if uploaded_file is not None:
         st.success(f"Uploaded: {uploaded_file.name}")
         st.caption("Video uploaded and ready for processing.")
+        if use_upload_calibration:
+            st.caption("Uploaded video will use the same hoop and net ROI currently saved in the app.")
+            st.caption(f"Upload Hoop ROI: {get_hoop_roi()}")
+            st.caption(f"Upload Net ROI: {get_net_roi()}")
 
     if st.button("Run Shot Detection"):
         if uploaded_file is None:
@@ -498,8 +532,20 @@ with st.sidebar:
                 with st.spinner("Optimizing video (1080p)..."):
                     optimized_path = resize_video_to_1080p(temp_path)
 
+                preview_frame = get_video_first_frame(optimized_path)
+                if preview_frame is not None and use_upload_calibration:
+                    st.image(
+                        cv2.cvtColor(draw_preview(preview_frame, get_hoop_roi(), get_net_roi()), cv2.COLOR_BGR2RGB),
+                        caption="Upload Preview with Current ROI",
+                        use_container_width=True,
+                    )
+
                 with st.spinner("Processing video..."):
-                    shot_events = process_video(optimized_path, session_name)
+                    shot_events = process_video_with_optional_roi(
+                        optimized_path,
+                        session_name,
+                        use_calibrated_roi=use_upload_calibration
+                    )
 
                 if shot_events is None:
                     st.error("Detection returned no result.")
