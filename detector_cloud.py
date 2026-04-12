@@ -2,10 +2,10 @@ import cv2
 from datetime import datetime
 
 
-def process_video(video_path, session_name="Practice Day 1"):
-    # ---------------- FULL-RES ROI VALUES ----------------
-    FULL_ROI_X, FULL_ROI_Y, FULL_ROI_W, FULL_ROI_H = 1050, 760, 270, 130
-    FULL_NET_X, FULL_NET_Y, FULL_NET_W, FULL_NET_H = 1127, 901, 97, 83
+def process_video(video_path, session_name="Practice Day 1", hoop_roi=None, net_roi=None):
+    # ---------------- DEFAULT FULL-RES ROI VALUES ----------------
+    DEFAULT_FULL_ROI_X, DEFAULT_FULL_ROI_Y, DEFAULT_FULL_ROI_W, DEFAULT_FULL_ROI_H = 1050, 760, 270, 130
+    DEFAULT_FULL_NET_X, DEFAULT_FULL_NET_Y, DEFAULT_FULL_NET_W, DEFAULT_FULL_NET_H = 1127, 901, 97, 83
 
     # ---------------- PROCESSING SCALE ----------------
     PROCESS_SCALE = 0.5
@@ -31,6 +31,27 @@ def process_video(video_path, session_name="Practice Day 1"):
     last_event_frame = -999999
     motion_frames = 0
 
+    # ---------------- USE PASSED ROI OR DEFAULT ROI ----------------
+    if hoop_roi is not None and len(hoop_roi) == 4:
+        FULL_ROI_X, FULL_ROI_Y, FULL_ROI_W, FULL_ROI_H = [int(v) for v in hoop_roi]
+    else:
+        FULL_ROI_X, FULL_ROI_Y, FULL_ROI_W, FULL_ROI_H = (
+            DEFAULT_FULL_ROI_X,
+            DEFAULT_FULL_ROI_Y,
+            DEFAULT_FULL_ROI_W,
+            DEFAULT_FULL_ROI_H,
+        )
+
+    if net_roi is not None and len(net_roi) == 4:
+        FULL_NET_X, FULL_NET_Y, FULL_NET_W, FULL_NET_H = [int(v) for v in net_roi]
+    else:
+        FULL_NET_X, FULL_NET_Y, FULL_NET_W, FULL_NET_H = (
+            DEFAULT_FULL_NET_X,
+            DEFAULT_FULL_NET_Y,
+            DEFAULT_FULL_NET_W,
+            DEFAULT_FULL_NET_H,
+        )
+
     # ---------------- SCALE ROI VALUES ----------------
     ROI_X = int(FULL_ROI_X * PROCESS_SCALE)
     ROI_Y = int(FULL_ROI_Y * PROCESS_SCALE)
@@ -51,6 +72,9 @@ def process_video(video_path, session_name="Practice Day 1"):
 
         roi_a = frame_a[y:y+h, x:x+w]
         roi_b = frame_b[y:y+h, x:x+w]
+
+        if roi_a.size == 0 or roi_b.size == 0:
+            return []
 
         diff = cv2.absdiff(roi_a, roi_b)
         gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
