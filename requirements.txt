@@ -4,3 +4,4 @@ altair
 opencv-python-headless
 av
 streamlit-webrtc
+streamlit-drawable-canvas
