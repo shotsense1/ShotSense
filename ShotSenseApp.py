@@ -9,6 +9,7 @@ import tempfile
 import re
 import time
 import threading
+from io import BytesIO
 from PIL import Image
 from datetime import datetime
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration, WebRtcMode
@@ -233,6 +234,14 @@ def extract_last_rect(canvas_result):
     height = int(rect.get("height", 0) * rect.get("scaleY", 1))
 
     return (left, top, width, height)
+
+def make_canvas_safe_image(pil_image):
+    buffer = BytesIO()
+    pil_image.save(buffer, format="PNG")
+    buffer.seek(0)
+    safe_image = Image.open(buffer).convert("RGB")
+    safe_image.load()
+    return safe_image
 
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
@@ -670,7 +679,8 @@ elif page == "Live":
                         frame_bgr = ctx.video_processor.latest_frame.copy()
                         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
                         pil_img = Image.fromarray(frame_rgb).convert("RGB")
-                        st.session_state.captured_live_frame = pil_img.copy()
+                        safe_img = make_canvas_safe_image(pil_img)
+                        st.session_state.captured_live_frame = safe_img
                         st.success("Calibration frame captured.")
                     else:
                         st.error("No frame available yet. Let the camera run for a second and try again.")
@@ -704,8 +714,7 @@ elif page == "Live":
     st.write("Capture a frame from the live camera, then draw one box for the hoop and one for the net.")
 
     if st.session_state.captured_live_frame is not None:
-        image = st.session_state.captured_live_frame.convert("RGB").copy()
-        image_for_canvas = image.copy()
+        image = make_canvas_safe_image(st.session_state.captured_live_frame.convert("RGB"))
         img_w, img_h = image.size
 
         st.image(image, caption="Captured Calibration Frame", use_container_width=True)
@@ -716,7 +725,7 @@ elif page == "Live":
             fill_color="rgba(0, 0, 255, 0.15)",
             stroke_width=2,
             stroke_color="#1d4ed8",
-            background_image=image_for_canvas,
+            background_image=image,
             update_streamlit=True,
             height=img_h,
             width=img_w,
@@ -735,7 +744,7 @@ elif page == "Live":
             fill_color="rgba(0, 255, 0, 0.15)",
             stroke_width=2,
             stroke_color="#16a34a",
-            background_image=image_for_canvas,
+            background_image=image,
             update_streamlit=True,
             height=img_h,
             width=img_w,
