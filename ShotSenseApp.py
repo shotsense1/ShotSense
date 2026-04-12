@@ -39,8 +39,8 @@ if "HOOP_ROI" not in st.session_state:
 if "NET_ROI" not in st.session_state:
     st.session_state.NET_ROI = (563, 450, 48, 41)
 
-if "live_calibration_image" not in st.session_state:
-    st.session_state.live_calibration_image = None
+if "captured_live_frame" not in st.session_state:
+    st.session_state.captured_live_frame = None
 
 # ---------------- CSS ----------------
 st.markdown(f"""
@@ -242,6 +242,7 @@ RTC_CONFIG = RTCConfiguration(
 class LiveVideoProcessor(VideoProcessorBase):
     def __init__(self):
         self.prev_frame = None
+        self.latest_frame = None
         self.motion_frames = 0
         self.last_event_time = 0
         self.last_result = ""
@@ -270,6 +271,9 @@ class LiveVideoProcessor(VideoProcessorBase):
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         img = cv2.resize(img, (960, 540))
+
+        with self.lock:
+            self.latest_frame = img.copy()
 
         hoop_roi = get_hoop_roi()
         net_roi = get_net_roi()
@@ -642,7 +646,7 @@ elif page == "Live":
     with c2:
         st.write(f"**Net ROI:** {net_roi}")
 
-    st.info("For best results, keep the camera fixed. If the setup changes, recalibrate below.")
+    st.info("For best results, keep the camera fixed. If the setup changes, capture a new calibration frame below.")
 
     ctx = webrtc_streamer(
         key="shotsense-live-cloud",
@@ -655,6 +659,27 @@ elif page == "Live":
 
     live_count = len(st.session_state.cloud_events)
     st.write(f"Current session shots collected: **{live_count}**")
+
+    cap1, cap2 = st.columns(2)
+
+    with cap1:
+        if st.button("Capture Current Frame"):
+            if ctx.state.playing and ctx.video_processor:
+                with ctx.video_processor.lock:
+                    if ctx.video_processor.latest_frame is not None:
+                        frame_bgr = ctx.video_processor.latest_frame.copy()
+                        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                        st.session_state.captured_live_frame = Image.fromarray(frame_rgb)
+                        st.success("Calibration frame captured.")
+                    else:
+                        st.error("No frame available yet. Let the camera run for a second and try again.")
+            else:
+                st.error("Start the live camera first, then capture a frame.")
+
+    with cap2:
+        if st.button("Clear Captured Frame"):
+            st.session_state.captured_live_frame = None
+            st.rerun()
 
     if ctx.state.playing and ctx.video_processor:
         new_events = []
@@ -670,29 +695,18 @@ elif page == "Live":
             time.sleep(0.3)
             st.rerun()
 
-        time.sleep(1)
-        st.rerun()
-
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ---------- LIVE CALIBRATION TOOLS ----------
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Calibration Tools")
-    st.write("Take a picture from the mounted live camera position, upload it here, then draw one box for the hoop and one for the net.")
+    st.write("Capture a frame from the live camera, then draw one box for the hoop and one for the net.")
 
-    calibration_file = st.file_uploader(
-        "Upload Calibration Photo",
-        type=["png", "jpg", "jpeg"],
-        key="live_calibration_uploader"
-    )
-
-    if calibration_file is not None:
-        st.session_state.live_calibration_image = Image.open(calibration_file).convert("RGB")
-
-    if st.session_state.live_calibration_image is not None:
-        image = st.session_state.live_calibration_image
+    if st.session_state.captured_live_frame is not None:
+        image = st.session_state.captured_live_frame
         img_w, img_h = image.size
 
+        st.image(image, caption="Captured Calibration Frame", use_container_width=True)
         st.write(f"Calibration image size: {img_w} x {img_h}")
 
         st.markdown("### Draw Hoop ROI")
@@ -733,8 +747,9 @@ elif page == "Live":
         else:
             st.caption("Draw one rectangle around the net.")
 
-        c1, c2 = st.columns(2)
-        with c1:
+        s1, s2 = st.columns(2)
+
+        with s1:
             if st.button("Save Live Calibration"):
                 if hoop_rect and net_rect:
                     st.session_state.HOOP_ROI = normalize_roi(hoop_rect)
@@ -744,18 +759,17 @@ elif page == "Live":
                 else:
                     st.error("Please draw both the hoop ROI and net ROI before saving.")
 
-        with c2:
-            if st.button("Reset Calibration Photo"):
-                st.session_state.live_calibration_image = None
+        with s2:
+            if st.button("Reset ROI Drawings"):
                 st.rerun()
 
-        c3, c4 = st.columns(2)
-        with c3:
+        p1, p2 = st.columns(2)
+        with p1:
             st.write(f"**Saved Hoop ROI:** {get_hoop_roi()}")
-        with c4:
+        with p2:
             st.write(f"**Saved Net ROI:** {get_net_roi()}")
 
     else:
-        st.caption("No calibration photo uploaded yet.")
+        st.caption("No captured frame yet. Start the live camera and click 'Capture Current Frame'.")
 
     st.markdown("</div>", unsafe_allow_html=True)
