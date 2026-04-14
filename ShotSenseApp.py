@@ -33,6 +33,9 @@ BORDER = "rgba(255,255,255,0.08)"
 DEFAULT_HOOP_ROI = (540, 395, 103, 37)
 DEFAULT_NET_ROI = (563, 450, 48, 41)
 
+# ---------------- PRESETS ----------------
+PRESET_FILE = "presets.json"
+
 # ---------------- SESSION STATE ----------------
 if "cloud_events" not in st.session_state:
     st.session_state.cloud_events = []
@@ -411,6 +414,41 @@ def process_video_with_optional_roi(video_path, session_name, use_calibrated_roi
         return process_video(video_path, session_name)
     except TypeError:
         return process_video(video_path, session_name)
+
+def load_presets():
+    if not os.path.exists(PRESET_FILE):
+        return {}
+    try:
+        with open(PRESET_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_presets(presets):
+    with open(PRESET_FILE, "w") as f:
+        json.dump(presets, f, indent=2)
+
+def get_current_settings():
+    return {
+        "hoop_roi": list(get_hoop_roi()),
+        "net_roi": list(get_net_roi()),
+        "motion_thresh": st.session_state.motion_thresh,
+        "net_thresh": st.session_state.net_thresh,
+        "min_area": st.session_state.min_area,
+        "motion_frames_needed": st.session_state.motion_frames_needed,
+        "cooldown_seconds": st.session_state.cooldown_seconds,
+        "result_hold_seconds": st.session_state.result_hold_seconds,
+    }
+
+def apply_preset(preset):
+    st.session_state.HOOP_ROI = tuple(preset["hoop_roi"])
+    st.session_state.NET_ROI = tuple(preset["net_roi"])
+    st.session_state.motion_thresh = preset["motion_thresh"]
+    st.session_state.net_thresh = preset["net_thresh"]
+    st.session_state.min_area = preset["min_area"]
+    st.session_state.motion_frames_needed = preset["motion_frames_needed"]
+    st.session_state.cooldown_seconds = preset["cooldown_seconds"]
+    st.session_state.result_hold_seconds = preset["result_hold_seconds"]
 
 # ---------------- LIVE SETTINGS ----------------
 RTC_CONFIG = RTCConfiguration(
@@ -1017,6 +1055,34 @@ elif page == "Live":
     st.markdown('<div class="section-card">', unsafe_allow_html=True)
     st.subheader("Calibration Tools")
     st.write("Move the existing boxes while watching the calibration preview. Your original ROI values are kept as the default.")
+
+    # -------- PRESET SYSTEM --------
+    st.markdown("### Presets")
+
+    presets = load_presets()
+    preset_names = list(presets.keys())
+
+    p1, p2 = st.columns(2)
+
+    with p1:
+        new_preset_name = st.text_input("Preset Name")
+
+        if st.button("Save Preset"):
+            if new_preset_name.strip() == "":
+                st.warning("Enter a preset name.")
+            else:
+                presets[new_preset_name] = get_current_settings()
+                save_presets(presets)
+                st.success(f"Preset '{new_preset_name}' saved.")
+
+    with p2:
+        selected_preset = st.selectbox("Load Preset", ["None"] + preset_names)
+
+        if st.button("Apply Preset"):
+            if selected_preset != "None":
+                apply_preset(presets[selected_preset])
+                st.success(f"Preset '{selected_preset}' loaded.")
+                st.rerun()
 
     st.markdown("### Hoop Box Controls")
     hc1, hc2, hc3, hc4 = st.columns(4)
