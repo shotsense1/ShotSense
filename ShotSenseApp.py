@@ -592,6 +592,11 @@ with st.sidebar:
             st.caption(f"Upload Hoop ROI: {get_hoop_roi()}")
             st.caption(f"Upload Net ROI: {get_net_roi()}")
 
+        # --------- ADDED UPLOAD PREVIEW ONLY ---------
+        st.markdown("### Video Preview")
+        st.video(uploaded_file)
+        # ---------------------------------------------
+
     if st.button("Run Shot Detection"):
         if uploaded_file is None:
             st.error("Please upload a video first.")
