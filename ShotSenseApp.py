@@ -1079,26 +1079,6 @@ elif page == "Live":
             if st.button("Net Shorter"):
                 nudge_roi("NET", dh=-5)
 
-        st.markdown("### Sensitivity Settings")
-        st.caption("Motion Threshold: how much movement near the rim counts as a shot.")
-        st.caption("Net Threshold: how much the net has to move for it to count as a make.")
-        st.caption("Minimum Contour Area: ignores small movements that aren’t real shots.")
-        st.caption("Motion Frames Required: makes sure the ball is seen long enough before counting it.")
-        st.caption("Cooldown Seconds: stops one shot from being counted multiple times.")
-        st.caption("Result Display Time: how long MAKE or MISS stays on screen.")
-
-        s1, s2 = st.columns(2)
-
-        with s1:
-            st.session_state.motion_thresh = st.slider("Motion Threshold", 10, 80, st.session_state.motion_thresh)
-            st.session_state.net_thresh = st.slider("Net Threshold", 10, 80, st.session_state.net_thresh)
-            st.session_state.min_area = st.slider("Minimum Contour Area", 50, 2000, st.session_state.min_area)
-
-        with s2:
-            st.session_state.motion_frames_needed = st.slider("Motion Frames Required", 1, 8, st.session_state.motion_frames_needed)
-            st.session_state.cooldown_seconds = st.slider("Cooldown Seconds", 1.0, 5.0, st.session_state.cooldown_seconds)
-            st.session_state.result_hold_seconds = st.slider("Result Display Time", 0.5, 3.0, st.session_state.result_hold_seconds)
-
         b1, b2 = st.columns(2)
         with b1:
             if st.button("Save Live Calibration 2"):
@@ -1179,5 +1159,29 @@ elif page == "Live":
         if st.button("Clear Current Session Shots"):
             st.session_state.cloud_events = []
             st.success("Current session shots cleared.")
+
+    # -------- SENSITIVITY SETTINGS MOVED HERE --------
+    st.markdown('<div class="section-card">', unsafe_allow_html=True)
+    st.subheader("Sensitivity Settings")
+    st.caption("Motion Threshold: how much movement near the rim counts as a shot.")
+    st.caption("Net Threshold: how much the net has to move for it to count as a make.")
+    st.caption("Minimum Contour Area: ignores small movements that aren’t real shots.")
+    st.caption("Motion Frames Required: makes sure the ball is seen long enough before counting it.")
+    st.caption("Cooldown Seconds: stops one shot from being counted multiple times.")
+    st.caption("Result Display Time: how long MAKE or MISS stays on screen.")
+
+    s1, s2 = st.columns(2)
+
+    with s1:
+        st.session_state.motion_thresh = st.slider("Motion Threshold", 10, 80, st.session_state.motion_thresh)
+        st.session_state.net_thresh = st.slider("Net Threshold", 10, 80, st.session_state.net_thresh)
+        st.session_state.min_area = st.slider("Minimum Contour Area", 50, 2000, st.session_state.min_area)
+
+    with s2:
+        st.session_state.motion_frames_needed = st.slider("Motion Frames Required", 1, 8, st.session_state.motion_frames_needed)
+        st.session_state.cooldown_seconds = st.slider("Cooldown Seconds", 1.0, 5.0, st.session_state.cooldown_seconds)
+        st.session_state.result_hold_seconds = st.slider("Result Display Time", 0.5, 3.0, st.session_state.result_hold_seconds)
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
