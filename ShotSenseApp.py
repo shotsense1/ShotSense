@@ -630,10 +630,8 @@ with st.sidebar:
             st.caption(f"Upload Hoop ROI: {get_hoop_roi()}")
             st.caption(f"Upload Net ROI: {get_net_roi()}")
 
-        # --------- ADDED UPLOAD PREVIEW ONLY ---------
         st.markdown("### Video Preview")
         st.video(uploaded_file)
-        # ---------------------------------------------
 
     if st.button("Run Shot Detection"):
         if uploaded_file is None:
@@ -960,35 +958,168 @@ elif page == "Live":
     else:
         st.info("Setup Mode: ON")
 
-    st.markdown("### Calibration Capture")
-    st.caption("Use this camera capture to line up and save the hoop and net ROI before starting continuous live detection.")
+    # -------- SIDE BY SIDE CALIBRATION AREA --------
+    left_col, right_col = st.columns([1.2, 1])
 
-    calibration_image = st.camera_input("Calibration Camera", key="calibration_camera_input")
-    if calibration_image is not None:
-        st.session_state.calib_frame_bytes = calibration_image.getvalue()
+    with left_col:
+        st.markdown("### Calibration Capture")
+        st.caption("Use this camera capture to line up and save the hoop and net ROI before starting continuous live detection.")
 
-    calib_frame = None
-    if st.session_state.calib_frame_bytes is not None:
-        file_bytes = np.asarray(bytearray(st.session_state.calib_frame_bytes), dtype=np.uint8)
-        calib_frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        calibration_image = st.camera_input("Calibration Camera", key="calibration_camera_input")
+        if calibration_image is not None:
+            st.session_state.calib_frame_bytes = calibration_image.getvalue()
 
-    if calib_frame is not None:
-        calib_frame = cv2.resize(calib_frame, (960, 540))
-        calib_preview = draw_preview(calib_frame, get_hoop_roi(), get_net_roi())
-        st.image(
-            cv2.cvtColor(calib_preview, cv2.COLOR_BGR2RGB),
-            caption="Calibration Preview",
-            use_container_width=True,
-        )
+        calib_frame = None
+        if st.session_state.calib_frame_bytes is not None:
+            file_bytes = np.asarray(bytearray(st.session_state.calib_frame_bytes), dtype=np.uint8)
+            calib_frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
-    save1, save2 = st.columns(2)
-    with save1:
-        if st.button("Save Live Calibration"):
-            st.success("Calibration saved.")
-    with save2:
-        if st.button("Clear Calibration Frame"):
-            st.session_state.calib_frame_bytes = None
-            st.success("Calibration frame cleared.")
+        if calib_frame is not None:
+            calib_frame = cv2.resize(calib_frame, (960, 540))
+            calib_preview = draw_preview(calib_frame, get_hoop_roi(), get_net_roi())
+            st.image(
+                cv2.cvtColor(calib_preview, cv2.COLOR_BGR2RGB),
+                caption="Calibration Preview",
+                use_container_width=True,
+            )
+        else:
+            st.info("Capture a calibration image to see the preview here.")
+
+        save1, save2 = st.columns(2)
+        with save1:
+            if st.button("Save Live Calibration"):
+                st.success("Calibration saved.")
+        with save2:
+            if st.button("Clear Calibration Frame"):
+                st.session_state.calib_frame_bytes = None
+                st.success("Calibration frame cleared.")
+
+    with right_col:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        st.subheader("Calibration Tools")
+        st.write("Move the existing boxes while watching the calibration preview. Your original ROI values are kept as the default.")
+
+        st.markdown("### Presets")
+        presets = load_presets()
+        preset_names = list(presets.keys())
+
+        p1, p2 = st.columns(2)
+
+        with p1:
+            new_preset_name = st.text_input("Preset Name")
+
+            if st.button("Save Preset"):
+                if new_preset_name.strip() == "":
+                    st.warning("Enter a preset name.")
+                else:
+                    presets[new_preset_name] = get_current_settings()
+                    save_presets(presets)
+                    st.success(f"Preset '{new_preset_name}' saved.")
+
+        with p2:
+            selected_preset = st.selectbox("Load Preset", ["None"] + preset_names)
+
+            if st.button("Apply Preset"):
+                if selected_preset != "None":
+                    apply_preset(presets[selected_preset])
+                    st.success(f"Preset '{selected_preset}' loaded.")
+                    st.rerun()
+
+        st.markdown("### Hoop Box Controls")
+        hc1, hc2, hc3, hc4 = st.columns(4)
+
+        with hc1:
+            if st.button("Hoop ←"):
+                nudge_roi("HOOP", dx=-5)
+            if st.button("Hoop ↑"):
+                nudge_roi("HOOP", dy=-5)
+
+        with hc2:
+            if st.button("Hoop →"):
+                nudge_roi("HOOP", dx=5)
+            if st.button("Hoop ↓"):
+                nudge_roi("HOOP", dy=5)
+
+        with hc3:
+            if st.button("Hoop Wider"):
+                nudge_roi("HOOP", dw=5)
+            if st.button("Hoop Taller"):
+                nudge_roi("HOOP", dh=5)
+
+        with hc4:
+            if st.button("Hoop Narrower"):
+                nudge_roi("HOOP", dw=-5)
+            if st.button("Hoop Shorter"):
+                nudge_roi("HOOP", dh=-5)
+
+        st.markdown("### Net Box Controls")
+        nc1, nc2, nc3, nc4 = st.columns(4)
+
+        with nc1:
+            if st.button("Net ←"):
+                nudge_roi("NET", dx=-5)
+            if st.button("Net ↑"):
+                nudge_roi("NET", dy=-5)
+
+        with nc2:
+            if st.button("Net →"):
+                nudge_roi("NET", dx=5)
+            if st.button("Net ↓"):
+                nudge_roi("NET", dy=5)
+
+        with nc3:
+            if st.button("Net Wider"):
+                nudge_roi("NET", dw=5)
+            if st.button("Net Taller"):
+                nudge_roi("NET", dh=5)
+
+        with nc4:
+            if st.button("Net Narrower"):
+                nudge_roi("NET", dw=-5)
+            if st.button("Net Shorter"):
+                nudge_roi("NET", dh=-5)
+
+        st.markdown("### Sensitivity Settings")
+        st.caption("Motion Threshold: how much movement near the rim counts as a shot.")
+        st.caption("Net Threshold: how much the net has to move for it to count as a make.")
+        st.caption("Minimum Contour Area: ignores small movements that aren’t real shots.")
+        st.caption("Motion Frames Required: makes sure the ball is seen long enough before counting it.")
+        st.caption("Cooldown Seconds: stops one shot from being counted multiple times.")
+        st.caption("Result Display Time: how long MAKE or MISS stays on screen.")
+
+        s1, s2 = st.columns(2)
+
+        with s1:
+            st.session_state.motion_thresh = st.slider("Motion Threshold", 10, 80, st.session_state.motion_thresh)
+            st.session_state.net_thresh = st.slider("Net Threshold", 10, 80, st.session_state.net_thresh)
+            st.session_state.min_area = st.slider("Minimum Contour Area", 50, 2000, st.session_state.min_area)
+
+        with s2:
+            st.session_state.motion_frames_needed = st.slider("Motion Frames Required", 1, 8, st.session_state.motion_frames_needed)
+            st.session_state.cooldown_seconds = st.slider("Cooldown Seconds", 1.0, 5.0, st.session_state.cooldown_seconds)
+            st.session_state.result_hold_seconds = st.slider("Result Display Time", 0.5, 3.0, st.session_state.result_hold_seconds)
+
+        b1, b2 = st.columns(2)
+        with b1:
+            if st.button("Save Live Calibration 2"):
+                st.success("Calibration saved.")
+        with b2:
+            if st.button("Reset to Default ROI"):
+                st.session_state.HOOP_ROI = DEFAULT_HOOP_ROI
+                st.session_state.NET_ROI = DEFAULT_NET_ROI
+                st.session_state.motion_thresh = 35
+                st.session_state.net_thresh = 28
+                st.session_state.min_area = 220
+                st.session_state.motion_frames_needed = 3
+                st.session_state.cooldown_seconds = 2.0
+                st.session_state.result_hold_seconds = 1.2
+                st.session_state.detect_mode = False
+                st.session_state.calib_frame_bytes = None
+                st.success("ROIs reset to original defaults.")
+
+        st.write(f"**Current Hoop ROI:** {get_hoop_roi()}")
+        st.write(f"**Current Net ROI:** {get_net_roi()}")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("### Continuous Live Detection")
     st.caption("Start the live camera below after calibration is saved. This stream performs continuous MAKE/MISS detection using the saved ROI.")
@@ -1048,135 +1179,5 @@ elif page == "Live":
         if st.button("Clear Current Session Shots"):
             st.session_state.cloud_events = []
             st.success("Current session shots cleared.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ---------- CALIBRATION TOOLS ----------
-    st.markdown('<div class="section-card">', unsafe_allow_html=True)
-    st.subheader("Calibration Tools")
-    st.write("Move the existing boxes while watching the calibration preview. Your original ROI values are kept as the default.")
-
-    # -------- PRESET SYSTEM --------
-    st.markdown("### Presets")
-
-    presets = load_presets()
-    preset_names = list(presets.keys())
-
-    p1, p2 = st.columns(2)
-
-    with p1:
-        new_preset_name = st.text_input("Preset Name")
-
-        if st.button("Save Preset"):
-            if new_preset_name.strip() == "":
-                st.warning("Enter a preset name.")
-            else:
-                presets[new_preset_name] = get_current_settings()
-                save_presets(presets)
-                st.success(f"Preset '{new_preset_name}' saved.")
-
-    with p2:
-        selected_preset = st.selectbox("Load Preset", ["None"] + preset_names)
-
-        if st.button("Apply Preset"):
-            if selected_preset != "None":
-                apply_preset(presets[selected_preset])
-                st.success(f"Preset '{selected_preset}' loaded.")
-                st.rerun()
-
-    st.markdown("### Hoop Box Controls")
-    hc1, hc2, hc3, hc4 = st.columns(4)
-
-    with hc1:
-        if st.button("Hoop ←"):
-            nudge_roi("HOOP", dx=-5)
-        if st.button("Hoop ↑"):
-            nudge_roi("HOOP", dy=-5)
-
-    with hc2:
-        if st.button("Hoop →"):
-            nudge_roi("HOOP", dx=5)
-        if st.button("Hoop ↓"):
-            nudge_roi("HOOP", dy=5)
-
-    with hc3:
-        if st.button("Hoop Wider"):
-            nudge_roi("HOOP", dw=5)
-        if st.button("Hoop Taller"):
-            nudge_roi("HOOP", dh=5)
-
-    with hc4:
-        if st.button("Hoop Narrower"):
-            nudge_roi("HOOP", dw=-5)
-        if st.button("Hoop Shorter"):
-            nudge_roi("HOOP", dh=-5)
-
-    st.markdown("### Net Box Controls")
-    nc1, nc2, nc3, nc4 = st.columns(4)
-
-    with nc1:
-        if st.button("Net ←"):
-            nudge_roi("NET", dx=-5)
-        if st.button("Net ↑"):
-            nudge_roi("NET", dy=-5)
-
-    with nc2:
-        if st.button("Net →"):
-            nudge_roi("NET", dx=5)
-        if st.button("Net ↓"):
-            nudge_roi("NET", dy=5)
-
-    with nc3:
-        if st.button("Net Wider"):
-            nudge_roi("NET", dw=5)
-        if st.button("Net Taller"):
-            nudge_roi("NET", dh=5)
-
-    with nc4:
-        if st.button("Net Narrower"):
-            nudge_roi("NET", dw=-5)
-        if st.button("Net Shorter"):
-            nudge_roi("NET", dh=-5)
-
-    st.markdown("### Sensitivity Settings")
-    st.caption("Motion Threshold: how much movement near the rim counts as a shot.")
-    st.caption("Net Threshold: how much the net has to move for it to count as a make.")
-    st.caption("Minimum Contour Area: ignores small movements that aren’t real shots.")
-    st.caption("Motion Frames Required: makes sure the ball is seen long enough before counting it.")
-    st.caption("Cooldown Seconds: stops one shot from being counted multiple times.")
-    st.caption("Result Display Time: how long MAKE or MISS stays on screen.")
-
-    s1, s2 = st.columns(2)
-
-    with s1:
-        st.session_state.motion_thresh = st.slider("Motion Threshold", 10, 80, st.session_state.motion_thresh)
-        st.session_state.net_thresh = st.slider("Net Threshold", 10, 80, st.session_state.net_thresh)
-        st.session_state.min_area = st.slider("Minimum Contour Area", 50, 2000, st.session_state.min_area)
-
-    with s2:
-        st.session_state.motion_frames_needed = st.slider("Motion Frames Required", 1, 8, st.session_state.motion_frames_needed)
-        st.session_state.cooldown_seconds = st.slider("Cooldown Seconds", 1.0, 5.0, st.session_state.cooldown_seconds)
-        st.session_state.result_hold_seconds = st.slider("Result Display Time", 0.5, 3.0, st.session_state.result_hold_seconds)
-
-    b1, b2 = st.columns(2)
-    with b1:
-        if st.button("Save Live Calibration 2"):
-            st.success("Calibration saved.")
-    with b2:
-        if st.button("Reset to Default ROI"):
-            st.session_state.HOOP_ROI = DEFAULT_HOOP_ROI
-            st.session_state.NET_ROI = DEFAULT_NET_ROI
-            st.session_state.motion_thresh = 35
-            st.session_state.net_thresh = 28
-            st.session_state.min_area = 220
-            st.session_state.motion_frames_needed = 3
-            st.session_state.cooldown_seconds = 2.0
-            st.session_state.result_hold_seconds = 1.2
-            st.session_state.detect_mode = False
-            st.session_state.calib_frame_bytes = None
-            st.success("ROIs reset to original defaults.")
-
-    st.write(f"**Current Hoop ROI:** {get_hoop_roi()}")
-    st.write(f"**Current Net ROI:** {get_net_roi()}")
 
     st.markdown("</div>", unsafe_allow_html=True)
